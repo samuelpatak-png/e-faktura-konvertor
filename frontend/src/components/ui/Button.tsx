@@ -4,11 +4,11 @@ type Variant = "primary" | "accent" | "secondary" | "ghost" | "danger";
 type Size = "sm" | "md" | "lg";
 
 const VARIANT_CLASSES: Record<Variant, string> = {
-  primary: "bg-brand-600 text-white hover:bg-brand-700 focus-visible:ring-brand-500 disabled:bg-brand-600/50",
-  accent: "bg-accent-600 text-white hover:bg-accent-700 focus-visible:ring-accent-500 disabled:bg-accent-600/50",
-  secondary: "bg-white text-ink-900 border border-line hover:bg-canvas focus-visible:ring-brand-500",
+  primary: "bg-brand-600 text-white hover:opacity-90 active:opacity-80 focus-visible:ring-brand-500 disabled:opacity-50",
+  accent: "bg-accent-600 text-white hover:opacity-90 active:opacity-80 focus-visible:ring-accent-500 disabled:opacity-50",
+  secondary: "bg-surface text-ink-900 border border-line hover:bg-canvas focus-visible:ring-brand-500",
   ghost: "bg-transparent text-ink-700 hover:bg-canvas focus-visible:ring-brand-500",
-  danger: "bg-danger-600 text-white hover:bg-red-700 focus-visible:ring-danger-600 disabled:bg-danger-600/50",
+  danger: "bg-danger-600 text-white hover:opacity-90 active:opacity-80 focus-visible:ring-danger-600 disabled:opacity-50",
 };
 
 const SIZE_CLASSES: Record<Size, string> = {

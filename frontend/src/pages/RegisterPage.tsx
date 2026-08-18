@@ -35,7 +35,7 @@ export function RegisterPage() {
           <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-600 text-sm font-bold text-white">eF</span>
           e-Faktúra Konvertor
         </Link>
-        <div className="rounded-xl border border-line bg-white p-6 shadow-sm">
+        <div className="rounded-2xl border border-line bg-surface p-6 shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
           <h1 className="text-lg font-semibold text-ink-900">Vytvoriť účet</h1>
           <form onSubmit={handleSubmit} className="mt-5 flex flex-col gap-4">
             {error && <Alert tone="danger">{error}</Alert>}

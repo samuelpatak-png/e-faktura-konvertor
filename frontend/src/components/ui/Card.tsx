@@ -2,7 +2,7 @@ import type { HTMLAttributes, ReactNode } from "react";
 
 export function Card({ className = "", children, ...props }: HTMLAttributes<HTMLDivElement>) {
   return (
-    <div className={`rounded-xl border border-line bg-white shadow-sm ${className}`} {...props}>
+    <div className={`rounded-2xl border border-line bg-surface shadow-[0_1px_2px_rgba(0,0,0,0.04)] ${className}`} {...props}>
       {children}
     </div>
   );

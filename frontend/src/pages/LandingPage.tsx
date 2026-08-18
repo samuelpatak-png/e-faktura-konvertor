@@ -45,7 +45,7 @@ const STEPS = [
 export function LandingPage() {
   return (
     <div className="bg-canvas">
-      <header className="border-b border-line bg-white">
+      <header className="border-b border-line bg-surface">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4 sm:px-6">
           <div className="flex items-center gap-2 font-semibold text-ink-900">
             <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600 text-sm font-bold text-white">eF</span>
@@ -90,7 +90,7 @@ export function LandingPage() {
         </div>
       </section>
 
-      <section className="border-y border-line bg-white py-16 sm:py-20">
+      <section className="border-y border-line bg-surface py-16 sm:py-20">
         <div className="mx-auto max-w-6xl px-4 sm:px-6">
           <div className="mx-auto max-w-2xl text-center">
             <h2 className="text-2xl font-semibold text-ink-900 sm:text-3xl">Všetko, čo potrebuješ na e-fakturáciu</h2>
@@ -98,7 +98,7 @@ export function LandingPage() {
           </div>
           <div className="mt-12 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
             {FEATURES.map((f) => (
-              <div key={f.title} className="rounded-xl border border-line bg-white p-6 shadow-sm">
+              <div key={f.title} className="rounded-2xl border border-line bg-surface p-6 shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
                 <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-brand-50 text-brand-600">
                   <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5} aria-hidden="true">
                     {f.icon}
@@ -129,7 +129,9 @@ export function LandingPage() {
         </div>
       </section>
 
-      <section className="border-t border-line bg-ink-900 py-16 sm:py-20">
+      {/* Intentionally always-dark band regardless of site theme — bg-neutral-900 (fixed),
+          not the ink-900 token (which flips to white in dark mode). */}
+      <section className="border-t border-line bg-neutral-900 py-16 sm:py-20">
         <div className="mx-auto max-w-2xl px-4 text-center sm:px-6">
           <h2 className="text-2xl font-semibold text-white sm:text-3xl">Priprav sa na povinnú e-fakturáciu</h2>
           <p className="mt-3 text-slate-300">Zaregistruj sa zadarmo a vyskúšaj konverziu na svojich vlastných faktúrach.</p>
@@ -143,7 +145,7 @@ export function LandingPage() {
         </div>
       </section>
 
-      <footer className="border-t border-line bg-white py-8">
+      <footer className="border-t border-line bg-surface py-8">
         <div className="mx-auto max-w-6xl px-4 text-center text-sm text-ink-500 sm:px-6">
           e-Faktúra Konvertor — nezávislý nástroj pre konverziu do UBL Peppol BIS 3.0. Nie je súčasťou Finančnej správy SR.
         </div>

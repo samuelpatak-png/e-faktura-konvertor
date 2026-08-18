@@ -52,7 +52,7 @@ export function LineItemsTable({ lines, onChange }: Props) {
                     value={line.description}
                     onChange={(e) => updateLine(index, { description: e.target.value })}
                     placeholder="Napr. Webdizajn"
-                    className="w-full rounded-md border border-line px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+                    className="w-full rounded-md border border-line bg-surface px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
                   />
                 </td>
                 <td className="px-3 py-2">
@@ -63,14 +63,14 @@ export function LineItemsTable({ lines, onChange }: Props) {
                     step="any"
                     value={line.quantity}
                     onChange={(e) => updateLine(index, { quantity: Number(e.target.value) })}
-                    className="w-full rounded-md border border-line px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+                    className="w-full rounded-md border border-line bg-surface px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
                   />
                 </td>
                 <td className="px-3 py-2">
                   <select
                     value={line.unitCode}
                     onChange={(e) => updateLine(index, { unitCode: e.target.value as UnitCode })}
-                    className="w-full rounded-md border border-line bg-white px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+                    className="w-full rounded-md border border-line bg-surface px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
                   >
                     {UNIT_CODES.map((u) => (
                       <option key={u.code} value={u.code}>
@@ -87,14 +87,14 @@ export function LineItemsTable({ lines, onChange }: Props) {
                     step="0.01"
                     value={line.unitPrice}
                     onChange={(e) => updateLine(index, { unitPrice: Number(e.target.value) })}
-                    className="w-full rounded-md border border-line px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+                    className="w-full rounded-md border border-line bg-surface px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
                   />
                 </td>
                 <td className="px-3 py-2">
                   <select
                     value={line.taxRatePercent}
                     onChange={(e) => updateLine(index, { taxRatePercent: Number(e.target.value) as VatRate })}
-                    className="w-full rounded-md border border-line bg-white px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+                    className="w-full rounded-md border border-line bg-surface px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
                   >
                     {VAT_RATES.map((rate) => (
                       <option key={rate} value={rate}>

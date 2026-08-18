@@ -17,7 +17,7 @@ export function AppShell() {
 
   return (
     <div className="min-h-dvh bg-canvas">
-      <header className="sticky top-0 z-40 border-b border-line bg-white/90 backdrop-blur">
+      <header className="sticky top-0 z-40 border-b border-line bg-surface/80 backdrop-blur-md">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
           <div className="flex items-center gap-6">
             <NavLink to="/app" className="flex items-center gap-2 font-semibold text-ink-900">

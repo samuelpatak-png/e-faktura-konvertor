@@ -7,7 +7,7 @@ import { Spinner } from "../ui/Spinner";
 
 function confidenceTone(confidence: number): string {
   if (confidence >= 0.75) return "text-success-600";
-  if (confidence >= 0.4) return "text-amber-600";
+  if (confidence >= 0.4) return "text-warning-500";
   return "text-ink-500";
 }
 
@@ -87,7 +87,7 @@ export function PdfUpload({ onExtracted }: Props) {
       {error && <Alert tone="danger">{error}</Alert>}
 
       {extracted && !loading && (
-        <div className="rounded-lg border border-line bg-white p-4">
+        <div className="rounded-lg border border-line bg-surface p-4">
           <p className="text-sm font-medium text-ink-900">
             Nájdené údaje (celková istota {Math.round(extracted.overallConfidence * 100)} %)
           </p>

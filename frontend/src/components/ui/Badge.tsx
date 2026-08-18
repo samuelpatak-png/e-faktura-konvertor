@@ -1,9 +1,9 @@
 type Tone = "neutral" | "success" | "warning" | "danger" | "brand";
 
 const TONE_CLASSES: Record<Tone, string> = {
-  neutral: "bg-slate-100 text-ink-700",
-  success: "bg-green-50 text-success-600",
-  warning: "bg-amber-50 text-amber-700",
+  neutral: "bg-ink-900/8 text-ink-700",
+  success: "bg-success-600/15 text-success-600",
+  warning: "bg-warning-50 text-warning-500",
   danger: "bg-danger-50 text-danger-600",
   brand: "bg-brand-50 text-brand-700",
 };

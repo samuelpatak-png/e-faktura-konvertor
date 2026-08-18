@@ -1,38 +1,79 @@
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 @import "tailwindcss";
 
+/* Apple Human Interface Guidelines-inspired design system.
+   -apple-system/BlinkMacSystemFont resolve to real San Francisco on Apple devices;
+   Inter is the closest widely-available fallback elsewhere. */
 @theme {
-  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "IBM Plex Mono", monospace;
 
-  /* Semantic tokens — "Financial Trust" palette: professional blue + orange CTA on slate. */
-  --color-brand-50: #eff6ff;
-  --color-brand-100: #dbeafe;
-  --color-brand-500: #3b82f6;
-  --color-brand-600: #2563eb;
-  --color-brand-700: #1d4ed8;
-  --color-brand-900: #1e3a8a;
+  /* Brand = systemBlue (light) */
+  --color-brand-50: #eef6ff;
+  --color-brand-100: #d6ebff;
+  --color-brand-500: #007aff;
+  --color-brand-600: #007aff;
+  --color-brand-700: #0062cc;
+  --color-brand-900: #003f85;
 
-  --color-accent-500: #f97316;
-  --color-accent-600: #ea580c;
-  --color-accent-700: #c2410c;
+  /* Single extra accent (HIG allows one) = systemOrange, reserved for the few
+     "final/critical" actions (generate + save, switch SAPI-SK to live). */
+  --color-accent-500: #ff9500;
+  --color-accent-600: #ff9500;
+  --color-accent-700: #cc7600;
 
-  --color-ink-500: #64748b;
-  --color-ink-700: #334155;
-  --color-ink-900: #1e293b;
+  /* label / secondaryLabel / systemGroupedBackground (light) */
+  --color-ink-500: #6f6f76;
+  --color-ink-700: #48484d;
+  --color-ink-900: #000000;
 
-  --color-canvas: #f8fafc;
+  --color-canvas: #f2f2f7;
   --color-surface: #ffffff;
-  --color-line: #e2e8f0;
+  --color-line: #d8d8dc;
 
-  --color-success-600: #16a34a;
-  --color-danger-600: #dc2626;
-  --color-danger-50: #fef2f2;
+  --color-success-600: #34c759;
+  --color-danger-600: #ff3b30;
+  --color-danger-50: #fff1f0;
+  --color-warning-500: #ff9500;
+  --color-warning-50: #fff6e9;
+}
+
+:root {
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-brand-50: #06213b;
+    --color-brand-100: #0a2e52;
+    --color-brand-500: #0a84ff;
+    --color-brand-600: #0a84ff;
+    --color-brand-700: #409cff;
+    --color-brand-900: #cfe6ff;
+
+    --color-accent-500: #ff9f0a;
+    --color-accent-600: #ff9f0a;
+    --color-accent-700: #ffb340;
+
+    --color-ink-500: #98989f;
+    --color-ink-700: #c7c7cc;
+    --color-ink-900: #ffffff;
+
+    --color-canvas: #000000;
+    --color-surface: #1c1c1e;
+    --color-line: #38383a;
+
+    --color-success-600: #30d158;
+    --color-danger-600: #ff453a;
+    --color-danger-50: #2c1513;
+    --color-warning-500: #ff9f0a;
+    --color-warning-50: #2c2013;
+  }
 }
 
 body {
   font-feature-settings: "cv11", "ss01";
   -webkit-font-smoothing: antialiased;
+  background-color: var(--color-canvas);
 }
 
 @media (prefers-reduced-motion: reduce) {

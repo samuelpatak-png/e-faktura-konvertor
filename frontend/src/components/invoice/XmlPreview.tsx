@@ -10,7 +10,9 @@ export function XmlPreview({ xml }: { xml: string }) {
   }
 
   return (
-    <div className="relative overflow-hidden rounded-lg border border-line bg-ink-900">
+    // Always-dark code viewer regardless of site theme — bg-neutral-900 (fixed), not the
+    // ink-900 token (which flips to white in dark mode).
+    <div className="relative overflow-hidden rounded-lg border border-line bg-neutral-900">
       <button
         type="button"
         onClick={handleCopy}
