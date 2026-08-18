@@ -9,3 +9,5 @@ backend/prisma/dev.db
 backend/prisma/dev.db-journal
 frontend/dist/
 .vite/
+auto-backup.log
+.auto-backup.log
