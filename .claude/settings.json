@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/sawko/Documents/Projekty/e-faktura-konvertor/scripts/auto-backup.sh",
+            "timeout": 30,
+            "statusMessage": "Zálohujem zmeny na GitHub..."
+          }
+        ]
+      }
+    ]
+  }
+}
