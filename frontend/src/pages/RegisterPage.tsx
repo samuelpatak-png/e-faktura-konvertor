@@ -1,0 +1,74 @@
+import { useState, type FormEvent } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import { useAuth } from "../lib/auth";
+import { apiErrorMessage } from "../lib/api";
+import { Input } from "../components/ui/Input";
+import { Button } from "../components/ui/Button";
+import { Alert } from "../components/ui/Alert";
+
+export function RegisterPage() {
+  const { register } = useAuth();
+  const navigate = useNavigate();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
+    try {
+      await register(email, password);
+      navigate("/app/settings", { replace: true, state: { reason: "welcome" } });
+    } catch (err) {
+      setError(apiErrorMessage(err, "Registrácia zlyhala"));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="flex min-h-dvh items-center justify-center bg-canvas px-4">
+      <div className="w-full max-w-sm">
+        <Link to="/" className="mb-8 flex items-center justify-center gap-2 font-semibold text-ink-900">
+          <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-600 text-sm font-bold text-white">eF</span>
+          e-Faktúra Konvertor
+        </Link>
+        <div className="rounded-xl border border-line bg-white p-6 shadow-sm">
+          <h1 className="text-lg font-semibold text-ink-900">Vytvoriť účet</h1>
+          <form onSubmit={handleSubmit} className="mt-5 flex flex-col gap-4">
+            {error && <Alert tone="danger">{error}</Alert>}
+            <Input
+              label="Email"
+              type="email"
+              autoComplete="email"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+            <Input
+              label="Heslo"
+              type="password"
+              autoComplete="new-password"
+              required
+              minLength={8}
+              hint="Aspoň 8 znakov"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+            <Button type="submit" loading={loading} className="mt-2 w-full">
+              Vytvoriť účet
+            </Button>
+          </form>
+        </div>
+        <p className="mt-4 text-center text-sm text-ink-500">
+          Už máš účet?{" "}
+          <Link to="/login" className="font-medium text-brand-600 hover:text-brand-700">
+            Prihlás sa
+          </Link>
+        </p>
+      </div>
+    </div>
+  );
+}

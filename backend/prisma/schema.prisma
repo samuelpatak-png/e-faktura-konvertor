@@ -1,0 +1,126 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  // SQLite for local dev/MVP. Swap provider to "postgresql" + a real DATABASE_URL
+  // for production (Railway Postgres etc.) — schema below is portable as-is.
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  companyProfile   CompanyProfile?
+  sapiSkCredential SapiSkCredential?
+  invoices         Invoice[]
+}
+
+model CompanyProfile {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name       String
+  ico        String // 8-digit business registration number
+  dic        String // 10-digit tax ID — also the Peppol participant ID (scheme 0245)
+  icDph      String? // "SK" + 10 digits VAT ID, null if not a VAT payer
+  street     String
+  city       String
+  postalCode String
+  country    String @default("SK")
+  iban       String
+  bic        String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model SapiSkCredential {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  clientId               String
+  encryptedClientSecret  String // AES-256-GCM ciphertext, see lib/crypto.ts
+  mode                   String @default("mock") // "mock" | "live"
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum InvoiceStatus {
+  DRAFT
+  GENERATED
+  SENT
+  SEND_FAILED
+}
+
+model Invoice {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  number          String
+  issueDate       String // YYYY-MM-DD
+  dueDate         String // YYYY-MM-DD
+  buyerReference  String // BT-10, mandatory under PEPPOL-EN16931-R003
+  currency        String @default("EUR")
+  status          InvoiceStatus @default(DRAFT)
+
+  // Supplier snapshot at generation time (legal documents must not change retroactively
+  // if the live CompanyProfile is edited later).
+  supplierName       String
+  supplierIco        String
+  supplierDic        String
+  supplierIcDph      String?
+  supplierStreet     String
+  supplierCity       String
+  supplierPostalCode String
+  supplierCountry    String
+  supplierIban       String
+  supplierBic        String?
+
+  customerName       String
+  customerIco        String?
+  customerDic        String
+  customerIcDph      String?
+  customerStreet     String
+  customerCity       String
+  customerPostalCode String
+  customerCountry    String @default("SK")
+
+  netAmountCents   Int
+  taxAmountCents   Int
+  grossAmountCents Int
+
+  xml                   String? // generated UBL XML, once generated
+  sapiProviderDocumentId String?
+  sentAt                 DateTime?
+
+  lines InvoiceLine[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, number])
+}
+
+model InvoiceLine {
+  id        String  @id @default(cuid())
+  invoiceId String
+  invoice   Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  sortOrder      Int
+  description    String
+  quantity       Float @default(1) // display value only; lineNetCents below is the authoritative amount
+  unitCode       String @default("C62") // UN/ECE Rec 20 unit code: C62=ks, HUR=hod, KGM=kg, MTR=m, LTR=l, DAY=deň
+  unitPriceCents Int
+  taxRatePercent Int // 23 | 19 | 5 | 0 (Slovak rates as of 2026)
+  lineNetCents   Int // computed server-side via decimal.js at creation time, rounded to nearest cent
+}

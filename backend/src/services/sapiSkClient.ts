@@ -1,0 +1,110 @@
+import axios from "axios";
+import crypto from "crypto";
+import { v4 as uuidv4 } from "uuid";
+import { env } from "../lib/env";
+
+/**
+ * SAPI-SK is a real Slovak standard (OAuth2 client_credentials + POST /document/send for
+ * UBL Peppol documents), but this implementation is built from documentation gathered
+ * during development that could not be verified against a primary/authoritative source in
+ * this session. Treat the "live" path as a best-effort draft: confirm exact field names,
+ * endpoints and error shapes against your own SAPI-SK portal/credentials before relying on
+ * it for real sends. "mock" mode (the default) makes no network calls at all.
+ */
+
+export interface SapiSkSendParams {
+  clientId: string;
+  clientSecret: string;
+  mode: "mock" | "live";
+  senderParticipantId: string; // "0245:<supplier DIČ>"
+  receiverParticipantId: string; // "0245:<customer DIČ>"
+  documentId: string; // invoice number
+  xml: string;
+}
+
+export interface SapiSkSendResult {
+  success: boolean;
+  mock: boolean;
+  providerDocumentId?: string;
+  status?: string;
+  error?: string;
+}
+
+interface CachedToken {
+  accessToken: string;
+  expiresAt: number;
+}
+
+const tokenCache = new Map<string, CachedToken>();
+
+async function getAccessToken(clientId: string, clientSecret: string): Promise<string> {
+  const cached = tokenCache.get(clientId);
+  if (cached && cached.expiresAt > Date.now() + 5_000) {
+    return cached.accessToken;
+  }
+
+  const response = await axios.post(`${env.SAPI_SK_BASE_URL}/v1/auth/token`, {
+    grant_type: "client_credentials",
+    client_id: clientId,
+    client_secret: clientSecret,
+  });
+
+  const { access_token, expires_in } = response.data;
+  tokenCache.set(clientId, { accessToken: access_token, expiresAt: Date.now() + expires_in * 1000 });
+  return access_token;
+}
+
+export async function sendInvoiceViaSapiSk(params: SapiSkSendParams): Promise<SapiSkSendResult> {
+  if (params.mode === "mock") {
+    return {
+      success: true,
+      mock: true,
+      providerDocumentId: `mock-${uuidv4()}`,
+      status: "MOCK_ACCEPTED",
+    };
+  }
+
+  try {
+    const accessToken = await getAccessToken(params.clientId, params.clientSecret);
+    const checksum = crypto.createHash("sha256").update(params.xml, "utf8").digest("hex");
+
+    const response = await axios.post(
+      `${env.SAPI_SK_BASE_URL}/v1/document/send`,
+      {
+        metadata: {
+          documentId: params.documentId,
+          documentTypeId:
+            "urn:oasis:names:specification:ubl:schema:xsd:Invoice-2::Invoice##urn:cen.eu:en16931:2017#compliant#urn:fdc:peppol.eu:2017:poacc:billing:3.0::2.1",
+          processId: "urn:fdc:peppol.eu:2017:poacc:billing:01:1.0",
+          senderParticipantId: params.senderParticipantId,
+          receiverParticipantId: params.receiverParticipantId,
+          creationDateTime: new Date().toISOString(),
+        },
+        payload: params.xml,
+        payloadFormat: "XML",
+        payloadEncoding: "UTF-8",
+        checksum,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "X-Peppol-Participant-Id": params.senderParticipantId,
+          "Idempotency-Key": uuidv4(),
+          "Content-Type": "application/json",
+        },
+        timeout: 30_000,
+      }
+    );
+
+    return {
+      success: true,
+      mock: false,
+      providerDocumentId: response.data.providerDocumentId,
+      status: response.data.status,
+    };
+  } catch (err: any) {
+    const message: string =
+      err?.response?.data?.error?.message ?? err?.message ?? "Neznáma chyba pri odosielaní cez SAPI-SK";
+    return { success: false, mock: false, error: message };
+  }
+}
