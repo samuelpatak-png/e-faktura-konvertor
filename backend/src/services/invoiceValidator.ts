@@ -8,6 +8,7 @@ export interface ValidationResult {
 
 export interface ValidatableInvoice {
   supplierDic: string;
+  supplierIcDph: string | null;
   customerDic: string;
   buyerReference: string;
   lines: ComputedLine[];
@@ -37,6 +38,11 @@ export function validateComputedInvoice(input: ValidatableInvoice): ValidationRe
   }
   if (input.lines.length === 0) {
     errors.push("Faktúra musí mať aspoň jednu položku");
+  }
+  if (!input.supplierIcDph && input.lines.some((l) => l.taxRatePercent > 0)) {
+    errors.push(
+      "Dodávateľ nie je platca DPH (chýba IČ DPH v nastaveniach), ale faktúra obsahuje položku so sadzbou DPH vyššou ako 0 %"
+    );
   }
 
   for (const line of input.lines) {

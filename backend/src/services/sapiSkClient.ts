@@ -37,8 +37,17 @@ interface CachedToken {
 
 const tokenCache = new Map<string, CachedToken>();
 
+// Cache key includes a hash of the secret, not just clientId, so a cache hit can only ever
+// come from a caller who actually supplied the matching secret — clientId alone (a public-ish
+// identifier, not a credential) must never be enough to receive someone else's cached token.
+function cacheKey(clientId: string, clientSecret: string): string {
+  const secretHash = crypto.createHash("sha256").update(clientSecret).digest("hex");
+  return `${clientId}:${secretHash}`;
+}
+
 async function getAccessToken(clientId: string, clientSecret: string): Promise<string> {
-  const cached = tokenCache.get(clientId);
+  const key = cacheKey(clientId, clientSecret);
+  const cached = tokenCache.get(key);
   if (cached && cached.expiresAt > Date.now() + 5_000) {
     return cached.accessToken;
   }
@@ -50,12 +59,15 @@ async function getAccessToken(clientId: string, clientSecret: string): Promise<s
   });
 
   const { access_token, expires_in } = response.data;
-  tokenCache.set(clientId, { accessToken: access_token, expiresAt: Date.now() + expires_in * 1000 });
+  tokenCache.set(key, { accessToken: access_token, expiresAt: Date.now() + expires_in * 1000 });
   return access_token;
 }
 
 export async function sendInvoiceViaSapiSk(params: SapiSkSendParams): Promise<SapiSkSendResult> {
-  if (params.mode === "mock") {
+  // Fail-closed: only the exact value "live" reaches the network path below. Anything else
+  // (an absent/null/typo'd mode from a future call site) falls back to the safe mock response,
+  // rather than the network path being the default and "mock" the special case.
+  if (params.mode !== "live") {
     return {
       success: true,
       mock: true,

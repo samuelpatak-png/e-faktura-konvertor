@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { invoiceApi, apiErrorMessage } from "../lib/api";
+import { invoiceApi, apiErrorMessage, apiValidationErrors } from "../lib/api";
 import type { CustomerInput, ExtractedInvoiceData, GenerateResult, InvoiceInput, InvoiceLineInput, ValidationResult } from "../lib/types";
 import { Card, CardBody, CardHeader } from "../components/ui/Card";
 import { Input } from "../components/ui/Input";
@@ -98,9 +98,18 @@ export function InvoiceConverterPage() {
     try {
       const result = await invoiceApi.generate(buildInput());
       setGenerateResult(result);
-      if (!result.success && result.validation) setValidation(result.validation);
     } catch (err) {
-      setGenerateResult({ success: false, errors: [apiErrorMessage(err, "Generovanie zlyhalo")] });
+      // A 422 ("faktúra už nie je platná") rejects the promise rather than resolving it —
+      // surface the server's specific reasons via the same validation-errors panel used
+      // after "Skontrolovať faktúru", instead of a generic failure message.
+      const backendValidation = apiValidationErrors(err);
+      if (backendValidation) {
+        setValidation(backendValidation);
+        setConfirmCorrect(false);
+        setConfirmSend(false);
+      } else {
+        setGenerateResult({ success: false, errors: [apiErrorMessage(err, "Generovanie zlyhalo")] });
+      }
     } finally {
       setGenerating(false);
     }

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { invoiceApi, apiErrorMessage } from "../lib/api";
 import type { InvoiceDetail } from "../lib/types";
-import { centsToEur, formatDate, formatEur, INVOICE_STATUS_LABELS } from "../lib/format";
+import { centsToEur, formatDate, formatEur, invoiceStatusTone, INVOICE_STATUS_LABELS } from "../lib/format";
 import { Card, CardBody, CardHeader } from "../components/ui/Card";
 import { Badge } from "../components/ui/Badge";
 import { Alert } from "../components/ui/Alert";
@@ -56,7 +56,7 @@ export function InvoiceDetailPage() {
         <div>
           <div className="flex items-center gap-3">
             <h1 className="text-2xl font-semibold text-ink-900">Faktúra {invoice.number}</h1>
-            <Badge tone={invoice.status === "SENT" ? "success" : invoice.status === "SEND_FAILED" ? "danger" : "brand"}>
+            <Badge tone={invoiceStatusTone(invoice.status)}>
               {INVOICE_STATUS_LABELS[invoice.status] ?? invoice.status}
             </Badge>
           </div>

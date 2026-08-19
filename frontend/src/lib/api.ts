@@ -22,6 +22,7 @@ export function apiErrorMessage(err: unknown, fallback = "Nastala chyba, skús t
   if (axios.isAxiosError(err)) {
     const data = err.response?.data;
     if (data?.errors?.length) return (data.errors as string[]).join(" ");
+    if (data?.validation?.errors?.length) return (data.validation.errors as string[]).join(" ");
     if (data?.details) {
       const messages = Object.values(data.details as Record<string, string[]>).flat();
       if (messages.length) return messages.join(" ");
@@ -29,6 +30,14 @@ export function apiErrorMessage(err: unknown, fallback = "Nastala chyba, skús t
     if (data?.error) return data.error as string;
   }
   return fallback;
+}
+
+/** Pulls the structured ValidationResult out of a 422 "invoice invalid" error response, if present. */
+export function apiValidationErrors(err: unknown): ValidationResult | undefined {
+  if (axios.isAxiosError(err) && err.response?.data?.validation) {
+    return err.response.data.validation as ValidationResult;
+  }
+  return undefined;
 }
 
 export const authApi = {

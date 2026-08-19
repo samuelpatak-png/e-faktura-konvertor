@@ -46,8 +46,12 @@ export function centsToEur(cents: number): number {
 export function computeInvoiceTotals(input: Pick<InvoiceInput, "lines">): ComputedInvoiceTotals {
   const lines: ComputedLine[] = input.lines.map((line, index) => {
     const unitPriceCents = eurToCents(line.unitPrice);
+    // Computed from the raw unitPrice, not the already-rounded unitPriceCents above — rounding
+    // the unit price first and then multiplying by quantity would amplify that rounding error
+    // by quantity (e.g. a fraction-of-a-cent unit price on a large order).
     const lineNetCents = new Decimal(line.quantity)
-      .times(unitPriceCents)
+      .times(line.unitPrice)
+      .times(100)
       .toDecimalPlaces(0)
       .toNumber();
     return {

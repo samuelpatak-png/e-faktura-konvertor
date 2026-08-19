@@ -2,19 +2,12 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { invoiceApi, apiErrorMessage } from "../lib/api";
 import type { InvoiceListItem } from "../lib/types";
-import { formatDate, formatEur, INVOICE_STATUS_LABELS } from "../lib/format";
+import { formatDate, formatEur, invoiceStatusTone, INVOICE_STATUS_LABELS } from "../lib/format";
 import { Card } from "../components/ui/Card";
 import { Badge } from "../components/ui/Badge";
 import { Alert } from "../components/ui/Alert";
 import { FullPageSpinner } from "../components/ui/Spinner";
 import { Button } from "../components/ui/Button";
-
-function statusTone(status: string): "neutral" | "success" | "danger" | "brand" {
-  if (status === "SENT") return "success";
-  if (status === "SEND_FAILED") return "danger";
-  if (status === "GENERATED") return "brand";
-  return "neutral";
-}
 
 export function InvoiceHistoryPage() {
   const [invoices, setInvoices] = useState<InvoiceListItem[] | null>(null);
@@ -70,7 +63,7 @@ export function InvoiceHistoryPage() {
                   <td className="px-4 py-3 text-ink-700">{formatDate(inv.dueDate)}</td>
                   <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-900">{formatEur(inv.grossAmount)}</td>
                   <td className="px-4 py-3">
-                    <Badge tone={statusTone(inv.status)}>{INVOICE_STATUS_LABELS[inv.status] ?? inv.status}</Badge>
+                    <Badge tone={invoiceStatusTone(inv.status)}>{INVOICE_STATUS_LABELS[inv.status] ?? inv.status}</Badge>
                   </td>
                 </tr>
               ))}

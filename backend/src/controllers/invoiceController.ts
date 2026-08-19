@@ -3,7 +3,7 @@ import { prisma } from "../lib/prisma";
 import type { CompanyProfile } from "@prisma/client";
 import { invoiceInputSchema, type InvoiceInput } from "../validators/schemas";
 import { computeInvoiceTotals, centsToEur, type ComputedInvoiceTotals } from "../services/invoiceMath";
-import { validateComputedInvoice } from "../services/invoiceValidator";
+import { validateComputedInvoice, type ValidationResult } from "../services/invoiceValidator";
 import { generateInvoiceXml } from "../services/xmlGenerator";
 import { decryptSecret } from "../lib/crypto";
 import { sendInvoiceViaSapiSk } from "../services/sapiSkClient";
@@ -40,6 +40,20 @@ function buildXml(data: InvoiceInput, supplier: CompanyProfile, totals: Computed
   });
 }
 
+function validate(data: InvoiceInput, supplier: CompanyProfile, totals: ComputedInvoiceTotals): ValidationResult {
+  return validateComputedInvoice({
+    supplierDic: supplier.dic,
+    supplierIcDph: supplier.icDph,
+    customerDic: data.customer.dic,
+    buyerReference: data.buyerReference,
+    lines: totals.lines,
+    netAmountCents: totals.netAmountCents,
+    taxAmountCents: totals.taxAmountCents,
+    grossAmountCents: totals.grossAmountCents,
+    taxBreakdown: totals.taxBreakdown,
+  });
+}
+
 function summaryFromTotals(totals: ComputedInvoiceTotals) {
   return {
     netAmount: centsToEur(totals.netAmountCents),
@@ -64,16 +78,7 @@ export async function validateInvoice(req: Request, res: Response) {
   }
 
   const totals = computeInvoiceTotals(parsed.data);
-  const result = validateComputedInvoice({
-    supplierDic: supplier.dic,
-    customerDic: parsed.data.customer.dic,
-    buyerReference: parsed.data.buyerReference,
-    lines: totals.lines,
-    netAmountCents: totals.netAmountCents,
-    taxAmountCents: totals.taxAmountCents,
-    grossAmountCents: totals.grossAmountCents,
-    taxBreakdown: totals.taxBreakdown,
-  });
+  const result = validate(parsed.data, supplier, totals);
 
   // XML preview only — nothing is persisted here. Regenerated (and saved) again on /generate,
   // which is cheap since this is a pure function of the same input.
@@ -94,16 +99,7 @@ export async function generateInvoice(req: Request, res: Response) {
 
   const data = parsed.data;
   const totals = computeInvoiceTotals(data);
-  const validation = validateComputedInvoice({
-    supplierDic: supplier.dic,
-    customerDic: data.customer.dic,
-    buyerReference: data.buyerReference,
-    lines: totals.lines,
-    netAmountCents: totals.netAmountCents,
-    taxAmountCents: totals.taxAmountCents,
-    grossAmountCents: totals.grossAmountCents,
-    taxBreakdown: totals.taxBreakdown,
-  });
+  const validation = validate(data, supplier, totals);
 
   if (!validation.valid) {
     return res.status(422).json({ success: false, validation, summary: summaryFromTotals(totals) });
@@ -198,8 +194,12 @@ export async function getInvoice(req: Request, res: Response) {
 export async function downloadInvoice(req: Request, res: Response) {
   const invoice = await prisma.invoice.findFirst({ where: { id: req.params.id, userId: req.userId! } });
   if (!invoice || !invoice.xml) return res.status(404).json({ error: "Faktúra nenájdená" });
+  // invoice.number is free-text (real invoice numbering conventions use "/" etc., so the input
+  // schema doesn't restrict its charset) — sanitize here, at the one place it lands in a header,
+  // rather than by over-constraining what a valid invoice number can be.
+  const safeFilename = invoice.number.replace(/[^a-zA-Z0-9._-]/g, "_");
   res.setHeader("Content-Type", "application/xml");
-  res.setHeader("Content-Disposition", `attachment; filename="faktura_${invoice.number}.xml"`);
+  res.setHeader("Content-Disposition", `attachment; filename="faktura_${safeFilename}.xml"`);
   res.send(invoice.xml);
 }
 

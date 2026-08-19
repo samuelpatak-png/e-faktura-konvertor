@@ -73,7 +73,14 @@ export const invoiceLineSchema = z.object({
   description: z.string().trim().min(1).max(500),
   quantity: z.number().positive().max(1_000_000),
   unitCode: z.enum(UNIT_CODES).default("C62"),
-  unitPrice: z.number().nonnegative().max(10_000_000),
+  unitPrice: z
+    .number()
+    .nonnegative()
+    .max(10_000_000)
+    // Tolerance absorbs float noise (e.g. 9.99 not being exactly representable) while still
+    // rejecting genuine sub-cent input (e.g. 0.125), which would otherwise silently distort
+    // line totals — see invoiceMath.ts.
+    .refine((v) => Math.abs(v * 100 - Math.round(v * 100)) < 1e-6, "Jednotková cena môže mať najviac 2 desatinné miesta"),
   taxRatePercent: z.union([z.literal(23), z.literal(19), z.literal(5), z.literal(0)]),
 });
 
@@ -98,7 +105,10 @@ export const invoiceInputSchema = z
     issueDate: dateSchema,
     dueDate: dateSchema,
     buyerReference: z.string().trim().min(1).max(128),
-    lines: z.array(invoiceLineSchema).min(1, "Faktúra musí mať aspoň jednu položku"),
+    lines: z
+      .array(invoiceLineSchema)
+      .min(1, "Faktúra musí mať aspoň jednu položku")
+      .max(200, "Faktúra môže mať najviac 200 položiek"),
   })
   .refine((data) => new Date(data.dueDate).getTime() >= new Date(data.issueDate).getTime(), {
     message: "Dátum splatnosti nemôže byť pred dátumom vystavenia",

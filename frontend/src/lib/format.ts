@@ -20,3 +20,10 @@ export const INVOICE_STATUS_LABELS: Record<string, string> = {
   SENT: "Odoslaná",
   SEND_FAILED: "Odoslanie zlyhalo",
 };
+
+export function invoiceStatusTone(status: string): "neutral" | "success" | "danger" | "brand" {
+  if (status === "SENT") return "success";
+  if (status === "SEND_FAILED") return "danger";
+  if (status === "GENERATED") return "brand";
+  return "neutral";
+}

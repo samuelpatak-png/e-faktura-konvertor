@@ -70,7 +70,10 @@ function buildParty(doc: ReturnType<typeof create>, party: PartyDetails) {
 
   const legalEntity = partyEl.ele("cac:PartyLegalEntity");
   legalEntity.ele("cbc:RegistrationName").txt(party.name).up();
-  legalEntity.ele("cbc:CompanyID", { schemeID: SK_PEPPOL_SCHEME }).txt(party.ico ?? party.dic).up();
+  // No schemeID here: SK_PEPPOL_SCHEME ("0245") is specifically the 10-digit-DIČ Peppol
+  // participant scheme (used above for EndpointID/PartyIdentification) — tagging the 8-digit
+  // IČO legal-registration number with that same scheme would be self-contradictory.
+  legalEntity.ele("cbc:CompanyID").txt(party.ico ?? party.dic).up();
   legalEntity.up();
 
   partyEl.up();
