@@ -1,13 +1,43 @@
 export const VAT_RATES = [23, 19, 5, 0] as const;
 export type VatRate = (typeof VAT_RATES)[number];
 
+// Kept in sync manually with backend/src/lib/unitCodes.ts (UN/ECE Rec 20, verified against the
+// official Peppol code list — see that file's comment before adding more codes here).
 export const UNIT_CODES = [
   { code: "C62", label: "ks" },
-  { code: "HUR", label: "hod" },
-  { code: "KGM", label: "kg" },
-  { code: "MTR", label: "m" },
-  { code: "LTR", label: "l" },
   { code: "DAY", label: "deň" },
+  { code: "HUR", label: "hod" },
+  { code: "MIN", label: "minúta" },
+  { code: "MON", label: "mesiac" },
+  { code: "ANN", label: "rok" },
+  { code: "KGM", label: "kg" },
+  { code: "GRM", label: "g" },
+  { code: "MGM", label: "mg" },
+  { code: "TNE", label: "t (tona)" },
+  { code: "LBR", label: "libra" },
+  { code: "MTR", label: "m" },
+  { code: "CMT", label: "cm" },
+  { code: "MMT", label: "mm" },
+  { code: "KMT", label: "km" },
+  { code: "INH", label: "palec" },
+  { code: "FOT", label: "stopa" },
+  { code: "MTK", label: "m²" },
+  { code: "CMK", label: "cm²" },
+  { code: "MMK", label: "mm²" },
+  { code: "KMK", label: "km²" },
+  { code: "MTQ", label: "m³" },
+  { code: "LTR", label: "l" },
+  { code: "MLT", label: "ml" },
+  { code: "CMQ", label: "cm³" },
+  { code: "FTQ", label: "ft³" },
+  { code: "KWH", label: "kWh" },
+  { code: "EA", label: "each" },
+  { code: "DZN", label: "tucet" },
+  { code: "GRO", label: "gros (12 tuctov)" },
+  { code: "DPC", label: "tucet kusov" },
+  { code: "DPR", label: "tucet párov" },
+  { code: "LS", label: "paušál" },
+  { code: "H60", label: "%" },
 ] as const;
 export type UnitCode = (typeof UNIT_CODES)[number]["code"];
 
@@ -185,6 +215,37 @@ export interface PartnerListResult {
 export interface CompanyRegistryLookupResult {
   found: boolean;
   data: { name: string; street: string | null; city: string | null; postalCode: string | null } | null;
+}
+
+export interface PriceListItem {
+  id: string;
+  name: string;
+  description: string | null;
+  unitCode: string;
+  unitPriceCents: number;
+  unitPrice: number;
+  vatRate: VatRate;
+  sku: string | null;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type PriceListItemInput = {
+  name: string;
+  description: string | null;
+  unitCode: string;
+  unitPrice: number;
+  vatRate: VatRate;
+  sku: string | null;
+};
+export type PriceListItemUpdateInput = PriceListItemInput & { isActive: boolean };
+
+export interface PriceListResult {
+  items: PriceListItem[];
+  total: number;
+  page: number;
+  pageSize: number;
 }
 
 export interface SapiSendResult {

@@ -11,6 +11,10 @@ import type {
   PartnerInput,
   PartnerListResult,
   PartnerUpdateInput,
+  PriceListItem,
+  PriceListItemInput,
+  PriceListItemUpdateInput,
+  PriceListResult,
   SapiSendResult,
   SapiSkStatus,
   User,
@@ -80,6 +84,15 @@ export const partnerApi = {
   update: (id: string, data: PartnerUpdateInput) => api.put<Partner>(`/partner/${id}`, data).then((r) => r.data),
   remove: (id: string) => api.delete(`/partner/${id}`),
   lookupByIco: (ico: string) => api.get<CompanyRegistryLookupResult>(`/partner/registry/${ico}`).then((r) => r.data),
+};
+
+export const priceListApi = {
+  list: (params: { q?: string; page?: number; pageSize?: number; includeInactive?: boolean } = {}) =>
+    api.get<PriceListResult>("/price-list", { params }).then((r) => r.data),
+  get: (id: string) => api.get<PriceListItem>(`/price-list/${id}`).then((r) => r.data),
+  create: (data: PriceListItemInput) => api.post<PriceListItem>("/price-list", data).then((r) => r.data),
+  update: (id: string, data: PriceListItemUpdateInput) => api.put<PriceListItem>(`/price-list/${id}`, data).then((r) => r.data),
+  remove: (id: string) => api.delete(`/price-list/${id}`),
 };
 
 export const pdfApi = {

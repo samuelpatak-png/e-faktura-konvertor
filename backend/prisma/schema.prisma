@@ -20,6 +20,7 @@ model User {
   sapiSkCredential SapiSkCredential?
   invoices         Invoice[]
   partners         Partner[]
+  priceListItems   PriceListItem[]
 }
 
 model CompanyProfile {
@@ -142,6 +143,29 @@ model Partner {
   category String? // free text, no fixed taxonomy (spec didn't define one)
 
   isActive Boolean @default(true) // soft delete — partners may be referenced by historical invoices
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, isActive])
+  @@index([userId, name])
+}
+
+// Reusable catalogue of billable items/services, keyed by userId for the same reason as
+// Partner (see comment above) — used to add invoice lines without retyping description/price.
+model PriceListItem {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name           String
+  description    String?
+  unitCode       String @default("C62") // validated against backend/src/lib/unitCodes.ts (UN/ECE Rec 20)
+  unitPriceCents Int
+  vatRate        Int // 23 | 19 | 5 | 0 (Slovak rates as of 2026)
+  sku            String?
+
+  isActive Boolean @default(true) // soft delete — historical invoice lines keep their own snapshot
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
