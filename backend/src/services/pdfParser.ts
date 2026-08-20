@@ -80,7 +80,7 @@ export function parseInvoiceText(text: string): ExtractedInvoiceData {
     {
       // Bounded "skip" (just an optional č./c./: connector) so a numbered prefix like "FAK-"
       // ends up inside the captured value instead of being eaten by the skip itself.
-      regex: /(?:Faktúra|Faktura|Číslo faktúry|Cislo faktury)\s*(?:č[íi]slo\s*)?(?:č\.?|c\.?|:)?\s*([A-Za-z0-9\/\-]{4,20})/i,
+      regex: /(?:Faktúra|Faktura|Číslo faktúry|Cislo faktury)\s*(?:č[íi]slo\s*)?(?:č\.?|c\.?|:)?\s*([A-Za-z0-9/-]{4,20})/i,
       confidence: 0.7,
     },
   ]);

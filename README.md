@@ -22,6 +22,41 @@ npm run dev:frontend     # http://localhost:5173
 Frontend v dev móde proxuje `/api/*` na backend (`frontend/vite.config.ts`), takže obe bežia
 lokálne bez CORS problémov a so zdieľanými cookies.
 
+## Validácia (dvojvrstvová)
+
+1. **`invoiceValidator.ts`** — rýchla, ľudsky čitateľná business-rule kontrola, beží pri
+   každom `/invoice/validate` a `/invoice/generate` requeste v appke samotnej.
+2. **Oficiálny KOSIT validátor** (EN16931 XSD + Peppol BIS Billing 3.0 Schematron,
+   `itplr-kosit/validator` + `itplr-kosit/validator-configuration-bis`) — prísnejšia, oficiálna
+   vrstva, beží v CI a lokálne cez:
+   ```bash
+   npm run --workspace backend validate:fixtures
+   ```
+   Potrebuje Javu 11+ (`brew install openjdk@21` na macOS — keg-only, buď pridaj
+   `/opt/homebrew/opt/openjdk@21/bin` do PATH, alebo skript sám nájde tento default fallback).
+   Sťahuje pinnuté verzie nástroja do `backend/tools/kosit/` (gitignored, `scripts/setup-kosit.sh`).
+
+Tieto dve vrstvy sa **zámerne nezlučujú do jednej** — keď sa rozídu, znamená to reálnu medzeru v
+`invoiceValidator.ts`, nie bug v appke. Aktuálne známy rozdiel:
+
+- **`BR-Z-02`**: oficiálny Schematron vyžaduje Seller VAT Identifier (IČ DPH) aj pri riadku so
+  sadzbou 0 % v kategórii "Zero rated" (`Z`) — teda aj pre nulovú sadzbu musí byť dodávateľ
+  platca DPH. `invoiceValidator.ts` toto momentálne nekontroluje (blokuje len sadzby > 0 % bez
+  IČ DPH, pozri `src/services/invoiceValidator.ts`, test `invoiceValidator.test.ts` má tento
+  gap explicitne zdokumentovaný). Neplatca DPH pravdepodobne potrebuje inú kategóriu (`E`
+  Exempt alebo `O` Not subject to VAT) namiesto `Z` — toto je rozhodnutie o daňovej logike,
+  ktoré appka zatiaľ nerobí, a **vedome nebolo potichu opravené** (pozri WP0 handoff).
+
+Vzorové faktúry pre CI sú v `backend/test/fixtures/` (4 scenáre: bežná tuzemská 23 %, zmiešané
+sadzby, 0 % DPH s platcom, minimálna jednoriadková faktúra). Reverse charge a zahraničný
+odberateľ v EÚ **nie sú** vo fixtures ani v appke podporené — pozri "Čo ešte chýba" nižšie.
+
+## CI
+
+`.github/workflows/ci.yml` beží na každý push/PR: backend lint + typecheck + unit testy +
+Peppol validácia fixtures (Java sa provisionne cez `actions/setup-java`); frontend lint +
+typecheck + build.
+
 ## Architektúra
 
 ```
@@ -46,12 +81,11 @@ Toto vzniklo pri stavaní appky — každý bod je zdokumentovaný aj priamo v k
    (overené voči docs.peppol.eu) — brief to mal správne.
 3. **BuyerReference je povinné pole** (Peppol pravidlo PEPPOL-EN16931-R003), brief ho
    nespomínal — pridané do formulára aj XML.
-4. **Žiadna reálna XSD/Schematron validácia.** Namiesto sťahovania a napájania celého UBL 2.1
-   XSD stromu (viacero previazaných súborov) je tu vlastná, ručne písaná štruktúrna a
-   business-rule validácia (`invoiceValidator.ts`). Pokrýva to, čo appka sama generuje, ale
-   **pred ostrým nasadením odporúčam prehnať pár vzorových faktúr cez oficiálny
-   Peppol/EN16931 validátor** (napr. e-invoice.be/peppol-validator), aby si to niekto nezávisle
-   potvrdil.
+4. ~~Žiadna reálna XSD/Schematron validácia~~ **[WP0] Doplnené.** Namiesto vlastnej XSD
+   implementácie appka teraz napája oficiálny KOSIT validátor s Peppol BIS 3.0 Schematron
+   pravidlami — pozri sekciu "Validácia" vyššie. Toto reálne odhalilo medzeru
+   (`BR-Z-02`) v pôvodnej ručnej validácii, ktorá zostáva vedome neopravená (rozhodnutie o
+   daňovej logike, čaká na projektového vlastníka).
 5. **SAPI-SK adaptér je best-effort, nie overený.** SAPI-SK je reálny slovenský štandard
    (OAuth2 client_credentials → `POST /sapi/v1/document/send`), ale presný kontrakt
    (endpointy, názvy polí) pochádza z dokumentácie nájdenej počas vývoja, ktorú sa nepodarilo
@@ -72,12 +106,16 @@ Toto vzniklo pri stavaní appky — každý bod je zdokumentovaný aj priamo v k
 ## Známy nevyriešený issue
 
 `npm audit` hlási jednu high-severity zraniteľnosť (`deepmerge-ts` cez `@prisma/config`) — je to
-len v Prisma CLI (generate/migrate), nie v bežiacej appke, a k dátumu písania tohto README ju
-nemá opravenú ani najnovší Prisma release. Skontroluj `npm audit` po budúcich `npm update`.
+len v Prisma CLI (generate/migrate), nie v bežiacej appke. Znovu overené vo WP0 (2026-08-19,
+Prisma 6.19.3 aj `npm audit fix`) — stále bez opravy upstream. Skontroluj `npm audit` po
+budúcich `npm update`.
 
 ## Čo ešte chýba pred produkciou
 
 - Reálne SAPI-SK prihlasovacie údaje a potvrdenie kontraktu (bod 5 vyššie)
 - Nasadenie (frontend napr. Vercel, backend napr. Railway + Postgres namiesto SQLite —
   zmena je len v `backend/prisma/schema.prisma` datasource provider + `DATABASE_URL`)
-- Nezávislá kontrola vygenerovaného XML cez oficiálny Peppol validátor
+- **Rozhodnutie o `BR-Z-02`** (pozri "Validácia" vyššie) — či neplatca DPH môže vôbec vystaviť
+  0%-nú položku, a ak áno, pod akou tax category (`E`/`O`, nie `Z`)
+- Reverse charge (`AE`) a zahraničný odberateľ v EÚ — mimo rozsahu WP0, generátor aj schéma sú
+  zámerne obmedzené na tuzemské SK-SK faktúry (viď bod vyššie)

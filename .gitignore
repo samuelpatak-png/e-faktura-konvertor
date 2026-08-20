@@ -11,3 +11,5 @@ frontend/dist/
 .vite/
 auto-backup.log
 .auto-backup.log
+backend/tools/kosit/
+*-report.xml
