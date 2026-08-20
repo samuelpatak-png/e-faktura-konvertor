@@ -37,6 +37,12 @@ export const PAYMENT_STATUS_LABELS: Record<string, string> = {
 
 // UNPAID on its own isn't alarming (most invoices sit unpaid until their due date) — overdue-ness
 // is shown separately (a dedicated "days overdue" indicator), not folded into this badge's color.
+export const DOCUMENT_TYPE_LABELS: Record<string, string> = {
+  INVOICE: "Faktúra",
+  CREDIT_NOTE: "Dobropis",
+  ADVANCE_TAX_DOCUMENT: "Daňový doklad k platbe",
+};
+
 export function paymentStatusTone(status: string): "neutral" | "success" | "warning" | "danger" {
   if (status === "PAID") return "success";
   if (status === "PARTIALLY_PAID") return "warning";

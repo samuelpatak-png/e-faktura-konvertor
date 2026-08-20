@@ -70,6 +70,13 @@ enum PaymentStatus {
   CANCELLED
 }
 
+enum DocumentType {
+  INVOICE
+  CREDIT_NOTE // dobropis — UBL CreditNote-2, see services/xmlGenerator.ts generateCreditNoteXml
+  ADVANCE_TAX_DOCUMENT // "daňový doklad k prijatej platbe" — a normal Invoice-2 with InvoiceTypeCode=386,
+  // legally required only for a VAT-registered supplier (see WP4 handoff)
+}
+
 model Invoice {
   id     String @id @default(cuid())
   userId String
@@ -119,12 +126,28 @@ model Invoice {
   paidAt          DateTime?
   paymentStatus   PaymentStatus @default(UNPAID)
 
+  // WP4: credit notes and advance tax documents. `documentType: INVOICE` rows are the normal
+  // case; paymentStatus/overdue are only meaningful for those (see paymentStatus.ts callers).
+  documentType DocumentType @default(INVOICE)
+  // Self-relation: for a CREDIT_NOTE, the invoice it corrects (BG-3 Preceding invoice
+  // reference). Nullable because plain invoices and advance tax documents don't set it.
+  originalInvoiceId String?
+  original          Invoice?  @relation("InvoiceCorrections", fields: [originalInvoiceId], references: [id])
+  corrections       Invoice[] @relation("InvoiceCorrections")
+
+  // BT-113 — an advance already received that reduces this (final) invoice's payable amount.
+  // No structured EN16931 field exists to reference which prior document it came from (see
+  // WP4 handoff) — prepaidReference is carried as free text into the XML's cbc:Note.
+  prepaidAmountCents Int?
+  prepaidReference   String?
+
   lines InvoiceLine[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@unique([userId, number])
+  @@index([originalInvoiceId])
 }
 
 // Customer address book. Keyed by userId, not a separate Company entity — this codebase has
