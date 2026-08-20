@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { invoiceApi, apiErrorMessage, apiValidationErrors } from "../lib/api";
-import type { CustomerInput, ExtractedInvoiceData, GenerateResult, InvoiceInput, InvoiceLineInput, ValidationResult } from "../lib/types";
+import { invoiceApi, partnerApi, apiErrorMessage, apiValidationErrors } from "../lib/api";
+import type { CustomerInput, ExtractedInvoiceData, GenerateResult, InvoiceInput, InvoiceLineInput, Partner, ValidationResult } from "../lib/types";
 import { Card, CardBody, CardHeader } from "../components/ui/Card";
 import { Input } from "../components/ui/Input";
 import { Button } from "../components/ui/Button";
@@ -10,6 +10,7 @@ import { PdfUpload } from "../components/invoice/PdfUpload";
 import { LineItemsTable } from "../components/invoice/LineItemsTable";
 import { InvoicePreview } from "../components/invoice/InvoicePreview";
 import { XmlPreview } from "../components/invoice/XmlPreview";
+import { PartnerAutocomplete } from "../components/invoice/PartnerAutocomplete";
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
@@ -49,6 +50,65 @@ export function InvoiceConverterPage() {
 
   const [sendState, setSendState] = useState<"idle" | "sending" | "sent" | "failed">("idle");
   const [sendMessage, setSendMessage] = useState<string | null>(null);
+
+  const [partnerSaveState, setPartnerSaveState] = useState<"checking" | "offer" | "exists" | "saving" | "saved" | "error">("checking");
+
+  // Offer "save to registry" only once, right after a successful generation, and only if no
+  // partner with this exact DIČ already exists — never re-check on every render.
+  useEffect(() => {
+    if (!generateResult?.success) return;
+    let cancelled = false;
+    partnerApi
+      .list({ dic: customer.dic, includeInactive: true, pageSize: 1 })
+      .then((res) => {
+        if (!cancelled) setPartnerSaveState(res.total > 0 ? "exists" : "offer");
+      })
+      .catch(() => {
+        if (!cancelled) setPartnerSaveState("error");
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [generateResult?.success]);
+
+  async function handleSaveCustomerAsPartner() {
+    setPartnerSaveState("saving");
+    try {
+      await partnerApi.create({
+        name: customer.name,
+        ico: customer.ico || null,
+        dic: customer.dic,
+        icDph: customer.icDph || null,
+        street: customer.street,
+        city: customer.city,
+        postalCode: customer.postalCode,
+        countryCode: customer.country,
+        peppolScheme: null,
+        peppolId: null,
+        email: null,
+        note: null,
+        category: null,
+      });
+      setPartnerSaveState("saved");
+    } catch {
+      setPartnerSaveState("error");
+    }
+  }
+
+  function handleSelectPartner(partner: Partner) {
+    setCustomer({
+      name: partner.name,
+      ico: partner.ico ?? "",
+      dic: partner.dic,
+      icDph: partner.icDph ?? "",
+      street: partner.street,
+      city: partner.city,
+      postalCode: partner.postalCode,
+      country: partner.countryCode,
+    });
+    invalidateValidation();
+  }
 
   function invalidateValidation() {
     setValidation(null);
@@ -147,6 +207,7 @@ export function InvoiceConverterPage() {
     setGenerateResult(null);
     setSendState("idle");
     setSendMessage(null);
+    setPartnerSaveState("checking");
   }
 
   if (generateResult?.success) {
@@ -168,6 +229,19 @@ export function InvoiceConverterPage() {
           </Button>
         </div>
         {sendMessage && <Alert tone={sendState === "sent" ? "success" : "danger"}>{sendMessage}</Alert>}
+
+        {partnerSaveState === "offer" && (
+          <Alert tone="info" title="Uložiť odberateľa do číselníka?">
+            <div className="flex items-center justify-between gap-3">
+              <span>Tento odberateľ ešte nie je v číselníku — nabudúce sa dá vybrať autocompletom.</span>
+              <Button size="sm" variant="secondary" onClick={handleSaveCustomerAsPartner}>
+                Uložiť
+              </Button>
+            </div>
+          </Alert>
+        )}
+        {partnerSaveState === "saved" && <Alert tone="success">Odberateľ bol uložený do číselníka.</Alert>}
+
         {generateResult.xml && <XmlPreview xml={generateResult.xml} />}
         <Button variant="ghost" onClick={resetForm} className="self-start">
           + Vytvoriť ďalšiu faktúru
@@ -193,15 +267,14 @@ export function InvoiceConverterPage() {
       <Card>
         <CardHeader title="2. Odberateľ" />
         <CardBody className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Input
-            label="Názov firmy"
-            required
+          <PartnerAutocomplete
             className="sm:col-span-2"
             value={customer.name}
-            onChange={(e) => {
-              setCustomer({ ...customer, name: e.target.value });
+            onChange={(name) => {
+              setCustomer({ ...customer, name });
               invalidateValidation();
             }}
+            onSelect={handleSelectPartner}
           />
           <Input
             label="IČO"

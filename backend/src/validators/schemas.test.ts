@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { invoiceLineSchema } from "./schemas";
+import { invoiceLineSchema, partnerSchema } from "./schemas";
 
 const base = {
   description: "Test",
@@ -40,5 +40,49 @@ describe("invoiceLineSchema", () => {
     // zod's .safeParse accepts unknown input at compile time — this is a runtime check.
     const result = invoiceLineSchema.safeParse({ ...base, taxRatePercent: 21 });
     expect(result.success).toBe(false);
+  });
+});
+
+const validPartner = {
+  name: "Zákazník s.r.o.",
+  ico: "12345678",
+  dic: "1234567890",
+  icDph: "SK1234567890",
+  street: "Hlavná 1",
+  city: "Bratislava",
+  postalCode: "81101",
+  countryCode: "SK",
+};
+
+describe("partnerSchema", () => {
+  it("accepts a fully populated partner", () => {
+    expect(partnerSchema.safeParse(validPartner).success).toBe(true);
+  });
+
+  it("accepts null for every optional field (ico, icDph, peppolScheme, peppolId, email, note, category)", () => {
+    const result = partnerSchema.safeParse({
+      ...validPartner,
+      ico: null,
+      icDph: null,
+      peppolScheme: null,
+      peppolId: null,
+      email: null,
+      note: null,
+      category: null,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a missing DIČ — every saved partner must be usable to prefill an invoice", () => {
+    const { dic: _dic, ...withoutDic } = validPartner;
+    expect(partnerSchema.safeParse(withoutDic).success).toBe(false);
+  });
+
+  it("rejects a malformed email", () => {
+    expect(partnerSchema.safeParse({ ...validPartner, email: "not-an-email" }).success).toBe(false);
+  });
+
+  it("rejects an IČO that isn't exactly 8 digits", () => {
+    expect(partnerSchema.safeParse({ ...validPartner, ico: "123" }).success).toBe(false);
   });
 });

@@ -1,11 +1,16 @@
 import axios from "axios";
 import type {
   CompanyProfileInput,
+  CompanyRegistryLookupResult,
   ExtractedInvoiceData,
   GenerateResult,
   InvoiceDetail,
   InvoiceInput,
   InvoiceListItem,
+  Partner,
+  PartnerInput,
+  PartnerListResult,
+  PartnerUpdateInput,
   SapiSendResult,
   SapiSkStatus,
   User,
@@ -65,6 +70,16 @@ export const invoiceApi = {
   get: (id: string) => api.get<InvoiceDetail>(`/invoice/${id}`).then((r) => r.data),
   downloadUrl: (id: string) => `/api/invoice/${id}/download`,
   sendSapi: (id: string) => api.post<SapiSendResult>(`/invoice/${id}/send-sapi`).then((r) => r.data),
+};
+
+export const partnerApi = {
+  list: (params: { q?: string; dic?: string; page?: number; pageSize?: number; includeInactive?: boolean } = {}) =>
+    api.get<PartnerListResult>("/partner", { params }).then((r) => r.data),
+  get: (id: string) => api.get<Partner>(`/partner/${id}`).then((r) => r.data),
+  create: (data: PartnerInput) => api.post<Partner>("/partner", data).then((r) => r.data),
+  update: (id: string, data: PartnerUpdateInput) => api.put<Partner>(`/partner/${id}`, data).then((r) => r.data),
+  remove: (id: string) => api.delete(`/partner/${id}`),
+  lookupByIco: (ico: string) => api.get<CompanyRegistryLookupResult>(`/partner/registry/${ico}`).then((r) => r.data),
 };
 
 export const pdfApi = {

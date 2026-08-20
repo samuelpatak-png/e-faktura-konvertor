@@ -19,6 +19,7 @@ model User {
   companyProfile   CompanyProfile?
   sapiSkCredential SapiSkCredential?
   invoices         Invoice[]
+  partners         Partner[]
 }
 
 model CompanyProfile {
@@ -109,6 +110,44 @@ model Invoice {
   updatedAt DateTime @updatedAt
 
   @@unique([userId, number])
+}
+
+// Customer address book. Keyed by userId, not a separate Company entity — this codebase has
+// no multi-user-per-tenant concept anywhere else (CompanyProfile/SapiSkCredential/Invoice are
+// all userId-keyed 1:1-per-account), so Partner follows the same pattern for consistency
+// rather than introducing a new tenancy model the spec assumed but the schema doesn't have.
+model Partner {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name  String
+  ico   String? // 8-digit business registration number
+  dic   String // 10-digit tax ID — required so a saved partner is immediately usable as an invoice customer
+  icDph String? // "SK" + 10 digits VAT ID, null if not a VAT payer
+
+  street      String
+  city        String
+  postalCode  String
+  countryCode String @default("SK")
+
+  // Stored for future cross-border/direct-Peppol-addressing use, but not yet consumed by
+  // xmlGenerator.ts — the generator is still domestic-SK-only (scheme 0245 hardcoded), see
+  // README "Čo ešte chýba". Not part of WP1's scope to wire up.
+  peppolScheme String?
+  peppolId     String?
+
+  email    String?
+  note     String? // free text, e.g. internal remarks
+  category String? // free text, no fixed taxonomy (spec didn't define one)
+
+  isActive Boolean @default(true) // soft delete — partners may be referenced by historical invoices
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, isActive])
+  @@index([userId, name])
 }
 
 model InvoiceLine {

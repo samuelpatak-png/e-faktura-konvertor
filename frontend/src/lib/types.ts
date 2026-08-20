@@ -152,6 +152,41 @@ export interface ExtractedInvoiceData {
   overallConfidence: number;
 }
 
+export interface Partner {
+  id: string;
+  name: string;
+  ico: string | null;
+  dic: string;
+  icDph: string | null;
+  street: string;
+  city: string;
+  postalCode: string;
+  countryCode: string;
+  peppolScheme: string | null;
+  peppolId: string | null;
+  email: string | null;
+  note: string | null;
+  category: string | null;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type PartnerInput = Omit<Partner, "id" | "isActive" | "createdAt" | "updatedAt">;
+export type PartnerUpdateInput = PartnerInput & { isActive: boolean };
+
+export interface PartnerListResult {
+  items: Partner[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface CompanyRegistryLookupResult {
+  found: boolean;
+  data: { name: string; street: string | null; city: string | null; postalCode: string | null } | null;
+}
+
 export interface SapiSendResult {
   success: boolean;
   mock: boolean;
