@@ -2,9 +2,10 @@ import type { Request, Response } from "express";
 import { prisma } from "../lib/prisma";
 import type { CompanyProfile, Invoice } from "@prisma/client";
 import { invoiceInputSchema, recordPaymentSchema, creditNoteInputSchema, type InvoiceInput } from "../validators/schemas";
-import { computeInvoiceTotals, centsToEur, type ComputedInvoiceTotals } from "../services/invoiceMath";
+import { computeInvoiceTotals, centsToEur, taxBreakdownFromLines, type ComputedInvoiceTotals } from "../services/invoiceMath";
 import { validateComputedInvoice, type ValidationResult } from "../services/invoiceValidator";
 import { generateInvoiceXml, generateCreditNoteXml } from "../services/xmlGenerator";
+import { generateInvoicePdf, type PdfInvoiceInput, type BrandingImage } from "../services/pdfGenerator";
 import { decryptSecret } from "../lib/crypto";
 import { sendInvoiceViaSapiSk } from "../services/sapiSkClient";
 import { computePaymentStatus, isOverdue, daysOverdue, agingBucket } from "../services/paymentStatus";
@@ -245,6 +246,80 @@ export async function downloadInvoice(req: Request, res: Response) {
   res.setHeader("Content-Type", "application/xml");
   res.setHeader("Content-Disposition", `attachment; filename="faktura_${safeFilename}.xml"`);
   res.send(invoice.xml);
+}
+
+function brandingImage(data: string | null, mimeType: string | null): BrandingImage | undefined {
+  if (!data || !mimeType) return undefined;
+  return { data: Buffer.from(data, "base64"), mimeType };
+}
+
+export async function downloadInvoicePdf(req: Request, res: Response) {
+  const invoice = await prisma.invoice.findFirst({
+    where: { id: req.params.id, userId: req.userId! },
+    include: {
+      lines: { orderBy: { sortOrder: "asc" } },
+      original: { select: { number: true } },
+    },
+  });
+  if (!invoice || !invoice.xml) return res.status(404).json({ error: "Faktúra nenájdená" });
+
+  // Branding is the company's *current* look, not part of the legal snapshot taken at
+  // generation time (unlike supplier name/address/IBAN, which are frozen on the Invoice row).
+  const profile = await prisma.companyProfile.findUnique({ where: { userId: req.userId! } });
+
+  const input: PdfInvoiceInput = {
+    documentType: invoice.documentType,
+    number: invoice.number,
+    issueDate: invoice.issueDate,
+    // CreditNoteType has no DueDate concept in UBL (see createCreditNote above) — the DB column
+    // is only ever populated with a non-meaningful placeholder for those rows, so don't print it.
+    dueDate: invoice.documentType === "CREDIT_NOTE" ? null : invoice.dueDate,
+    buyerReference: invoice.buyerReference,
+    currency: invoice.currency,
+    supplier: {
+      name: invoice.supplierName,
+      ico: invoice.supplierIco,
+      dic: invoice.supplierDic,
+      icDph: invoice.supplierIcDph,
+      street: invoice.supplierStreet,
+      city: invoice.supplierCity,
+      postalCode: invoice.supplierPostalCode,
+      country: invoice.supplierCountry,
+      iban: invoice.supplierIban,
+      bic: invoice.supplierBic,
+    },
+    customer: {
+      name: invoice.customerName,
+      ico: invoice.customerIco,
+      dic: invoice.customerDic,
+      icDph: invoice.customerIcDph,
+      street: invoice.customerStreet,
+      city: invoice.customerCity,
+      postalCode: invoice.customerPostalCode,
+      country: invoice.customerCountry,
+    },
+    lines: invoice.lines,
+    netAmountCents: invoice.netAmountCents,
+    taxAmountCents: invoice.taxAmountCents,
+    grossAmountCents: invoice.grossAmountCents,
+    taxBreakdown: taxBreakdownFromLines(invoice.lines),
+    prepaidAmountCents: invoice.prepaidAmountCents ?? undefined,
+    originalInvoiceNumber: invoice.original?.number,
+    xmlContent: invoice.xml,
+    branding: profile
+      ? {
+          logo: brandingImage(profile.logoData, profile.logoMimeType),
+          stamp: brandingImage(profile.stampData, profile.stampMimeType),
+          signature: brandingImage(profile.signatureData, profile.signatureMimeType),
+        }
+      : undefined,
+  };
+
+  const pdf = await generateInvoicePdf(input);
+  const safeFilename = invoice.number.replace(/[^a-zA-Z0-9._-]/g, "_");
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `attachment; filename="faktura_${safeFilename}.pdf"`);
+  res.send(pdf);
 }
 
 export async function sendInvoiceViaSapi(req: Request, res: Response) {

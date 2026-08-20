@@ -13,6 +13,7 @@ router.get("/", asyncHandler(invoiceController.listInvoices));
 router.get("/unpaid-summary", asyncHandler(invoiceController.getUnpaidSummary));
 router.get("/:id", asyncHandler(invoiceController.getInvoice));
 router.get("/:id/download", asyncHandler(invoiceController.downloadInvoice));
+router.get("/:id/pdf", asyncHandler(invoiceController.downloadInvoicePdf));
 router.post("/:id/send-sapi", asyncHandler(invoiceController.sendInvoiceViaSapi));
 router.post("/:id/payments", asyncHandler(invoiceController.recordPayment));
 router.post("/:id/cancel", asyncHandler(invoiceController.cancelInvoice));

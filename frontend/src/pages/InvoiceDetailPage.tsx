@@ -158,6 +158,9 @@ export function InvoiceDetailPage() {
           </p>
         </div>
         <div className="flex gap-2">
+          <Button variant="secondary" onClick={() => window.open(invoiceApi.pdfUrl(invoice.id), "_blank")}>
+            Stiahnuť PDF
+          </Button>
           <Button variant="secondary" onClick={() => window.open(invoiceApi.downloadUrl(invoice.id), "_blank")}>
             Stiahnuť XML
           </Button>

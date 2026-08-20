@@ -40,6 +40,16 @@ model CompanyProfile {
   iban       String
   bic        String?
 
+  // WP6: PDF branding. Stored as base64 in the DB (not on disk / not in git — "nikdy neukladaj
+  // do gitu" from the spec) since this app has no separate file-storage service; each pair is
+  // null together (no data without a mimeType or vice versa).
+  logoData          String?
+  logoMimeType      String?
+  stampData         String?
+  stampMimeType     String?
+  signatureData     String?
+  signatureMimeType String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }

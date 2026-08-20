@@ -65,12 +65,26 @@ export function computeInvoiceTotals(input: Pick<InvoiceInput, "lines">): Comput
     };
   });
 
+  const taxBreakdown = taxBreakdownFromLines(lines);
+  const netAmountCents = lines.reduce((sum, l) => sum + l.lineNetCents, 0);
+  const taxAmountCents = taxBreakdown.reduce((sum, b) => sum + b.taxAmountCents, 0);
+  const grossAmountCents = netAmountCents + taxAmountCents;
+
+  return { lines, netAmountCents, taxAmountCents, grossAmountCents, taxBreakdown };
+}
+
+/**
+ * Regroups already-computed lines (e.g. loaded back from InvoiceLine rows in cents) into
+ * per-rate VAT categories. Shared with computeInvoiceTotals so both paths reconcile via the
+ * same rounding rule (BR-CO-14/15) instead of two independently-written groupings drifting.
+ */
+export function taxBreakdownFromLines(lines: Pick<ComputedLine, "taxRatePercent" | "lineNetCents">[]): TaxCategoryBreakdown[] {
   const netByRate = new Map<number, number>();
   for (const line of lines) {
     netByRate.set(line.taxRatePercent, (netByRate.get(line.taxRatePercent) ?? 0) + line.lineNetCents);
   }
 
-  const taxBreakdown: TaxCategoryBreakdown[] = [...netByRate.entries()]
+  return [...netByRate.entries()]
     .sort((a, b) => b[0] - a[0])
     .map(([taxRatePercent, taxableAmountCents]) => ({
       taxRatePercent,
@@ -81,10 +95,4 @@ export function computeInvoiceTotals(input: Pick<InvoiceInput, "lines">): Comput
         .toDecimalPlaces(0)
         .toNumber(),
     }));
-
-  const netAmountCents = lines.reduce((sum, l) => sum + l.lineNetCents, 0);
-  const taxAmountCents = taxBreakdown.reduce((sum, b) => sum + b.taxAmountCents, 0);
-  const grossAmountCents = netAmountCents + taxAmountCents;
-
-  return { lines, netAmountCents, taxAmountCents, grossAmountCents, taxBreakdown };
 }
