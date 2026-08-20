@@ -22,6 +22,9 @@ model User {
   partners         Partner[]
   priceListItems   PriceListItem[]
   receivedInvoices ReceivedInvoice[]
+  emailSettings    EmailSettings?
+  reminderSettings ReminderSettings?
+  sentEmails       SentEmail[]
 }
 
 model CompanyProfile {
@@ -121,6 +124,12 @@ model Invoice {
   customerCity       String
   customerPostalCode String
   customerCountry    String @default("SK")
+  // WP7: not part of the legal UBL document (xmlGenerator.ts is untouched by WP7 — this is
+  // purely an operational "who do we email this to" field, snapshotted like the rest of the
+  // customer block, not a BT-* field). Optional: SAPI-SK/Peppol delivery doesn't need it, and
+  // invoices created before WP7 never had one. sendInvoiceEmail can also take an explicit
+  // recipient at send time instead, so a missing value here never fully blocks emailing.
+  customerEmail      String?
 
   netAmountCents   Int
   taxAmountCents   Int
@@ -152,7 +161,8 @@ model Invoice {
   prepaidAmountCents Int?
   prepaidReference   String?
 
-  lines InvoiceLine[]
+  lines      InvoiceLine[]
+  sentEmails SentEmail[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -289,5 +299,88 @@ model ReceivedInvoice {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@index([userId])
+}
+
+// WP7: per-company SMTP configuration for sending invoice emails. Chose SMTP over a
+// transactional-email provider (Resend/SendGrid/Postmark/...) — see WP7 handoff for the
+// reasoning (lower setup friction for a non-technical small-business owner who already has an
+// email account, no extra third-party signup/domain-verification, sender identity is the
+// company's own address). Credentials encrypted the same way as SapiSkCredential.
+model EmailSettings {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  smtpHost              String
+  smtpPort              Int
+  smtpSecure            Boolean @default(true) // true = implicit TLS (465), false = STARTTLS/plain (587/25)
+  smtpUser              String
+  encryptedSmtpPassword String // AES-256-GCM ciphertext, see lib/crypto.ts
+
+  fromEmail String
+  fromName  String
+
+  // {{invoiceNumber}}, {{amount}}, {{dueDate}}, {{customerName}} — see services/emailTemplate.ts
+  subjectTemplate String @default("Faktúra {{invoiceNumber}}")
+  bodyTemplate    String @default("Dobrý deň,\n\nv prílohe posielame faktúru č. {{invoiceNumber}} na sumu {{amount}} so splatnosťou {{dueDate}}.\n\nS pozdravom")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// WP7: per-company reminder cadence + text. Reminder N is due `firstReminderDays +
+// (N-1)*intervalDays` days after the invoice's dueDate, up to reminderCount reminders total —
+// a direct reading of "koľko dní po splatnosti, počet upomienok, odstupy" from the spec.
+model ReminderSettings {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  enabled           Boolean @default(false)
+  firstReminderDays Int     @default(7)
+  reminderCount     Int     @default(3)
+  intervalDays      Int     @default(7)
+
+  subjectTemplate String @default("Upomienka: Faktúra {{invoiceNumber}} po splatnosti")
+  bodyTemplate    String @default("Dobrý deň,\n\npripomíname, že faktúra č. {{invoiceNumber}} na sumu {{amount}} so splatnosťou {{dueDate}} nebola doteraz uhradená. Prosíme o úhradu v čo najkratšom čase.\n\nS pozdravom")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum SentEmailType {
+  INVOICE
+  REMINDER
+}
+
+enum SentEmailStatus {
+  SENT
+  FAILED
+}
+
+// WP7: log of every send attempt (not just successes — a FAILED row is what lets the UI show
+// "last attempt failed: <reason>" instead of silently looking like nothing happened).
+// reminderNumber is only set for type=REMINDER; it's how the scheduler checks "has reminder #2
+// for this invoice already gone out" before sending again — see services/reminderScheduler.ts
+// for why that check is a plain query rather than a DB unique constraint (a FAILED attempt
+// must not permanently block a retry of the same reminder number).
+model SentEmail {
+  id        String  @id @default(cuid())
+  userId    String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  invoiceId String
+  invoice   Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  type           SentEmailType
+  reminderNumber Int?
+  toEmail        String
+  subject        String
+  status         SentEmailStatus
+  errorMessage   String?
+
+  sentAt DateTime @default(now())
+
+  @@index([invoiceId])
   @@index([userId])
 }

@@ -2,7 +2,7 @@ import { PDFDocument, AFRelationship, rgb, type PDFFont, type PDFPage } from "pd
 import fontkit from "@pdf-lib/fontkit";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { centsToEur } from "./invoiceMath";
+import { centsToEur, formatEurCents } from "./invoiceMath";
 import { generatePaymentQr } from "./paymentQr";
 import type { PartyDetails } from "./xmlGenerator";
 import type { ComputedLine, TaxCategoryBreakdown } from "./invoiceMath";
@@ -52,15 +52,14 @@ export interface PdfInvoiceInput {
   };
 }
 
-function eur(cents: number): string {
-  return new Intl.NumberFormat("sk-SK", { style: "currency", currency: "EUR" }).format(centsToEur(cents));
-}
+const eur = formatEurCents;
 
-function formatDate(iso: string | null): string {
+export function formatDateSk(iso: string | null): string {
   if (!iso) return "—";
   const [y, m, d] = iso.split("-");
   return `${d}.${m}.${y}`;
 }
+const formatDate = formatDateSk;
 
 function partyLines(party: PartyDetails): string[] {
   const lines = [party.name, party.street, `${party.postalCode} ${party.city}`, party.country];

@@ -110,6 +110,11 @@ len v Prisma CLI (generate/migrate), nie v bežiacej appke. Znovu overené vo WP
 Prisma 6.19.3 aj `npm audit fix`) — stále bez opravy upstream. Skontroluj `npm audit` po
 budúcich `npm update`.
 
+WP7 (2026-08-20) pridal `mailparser` ako devDependency (parsovanie zachytených emailov v
+testoch, pozri `emailSender.test.ts`) — ten ťahá tú istú `deepmerge-ts` reťaz cez
+`html-to-text`. Nová cesta k tej istej už zdokumentovanej zraniteľnosti, nie nová
+zraniteľnosť — a opäť len v testoch, nie v bežiacej appke.
+
 ## Čo ešte chýba pred produkciou
 
 - Reálne SAPI-SK prihlasovacie údaje a potvrdenie kontraktu (bod 5 vyššie)

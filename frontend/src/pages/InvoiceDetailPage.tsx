@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { invoiceApi, apiErrorMessage } from "../lib/api";
-import type { InvoiceDetail } from "../lib/types";
+import type { InvoiceDetail, SentEmail } from "../lib/types";
 import {
   centsToEur,
   formatDate,
+  formatDateTime,
   formatEur,
   invoiceStatusTone,
   INVOICE_STATUS_LABELS,
@@ -38,12 +39,28 @@ export function InvoiceDetailPage() {
   const [creditNoteBusy, setCreditNoteBusy] = useState(false);
   const [creditNoteError, setCreditNoteError] = useState<string | null>(null);
 
+  const [sentEmails, setSentEmails] = useState<SentEmail[] | null>(null);
+  const [showEmailForm, setShowEmailForm] = useState(false);
+  const [emailTo, setEmailTo] = useState("");
+  const [emailSendState, setEmailSendState] = useState<"idle" | "sending" | "sent" | "failed">("idle");
+  const [emailSendMessage, setEmailSendMessage] = useState<string | null>(null);
+
+  const [reminderSendState, setReminderSendState] = useState<"idle" | "sending" | "sent" | "failed">("idle");
+  const [reminderSendMessage, setReminderSendMessage] = useState<string | null>(null);
+
+  function refreshSentEmails() {
+    if (!id) return;
+    invoiceApi.listSentEmails(id).then(setSentEmails).catch(() => setSentEmails([]));
+  }
+
   useEffect(() => {
     if (!id) return;
     invoiceApi
       .get(id)
       .then(setInvoice)
       .catch((err) => setError(apiErrorMessage(err, "Faktúru sa nepodarilo načítať")));
+    refreshSentEmails();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
   async function handleSend() {
@@ -127,6 +144,46 @@ export function InvoiceDetailPage() {
     }
   }
 
+  function handleOpenEmailForm() {
+    setEmailTo(invoice?.customerEmail ?? "");
+    setEmailSendMessage(null);
+    setEmailSendState("idle");
+    setShowEmailForm(true);
+  }
+
+  async function handleSendEmail() {
+    if (!id) return;
+    setEmailSendState("sending");
+    setEmailSendMessage(null);
+    try {
+      const result = await invoiceApi.sendEmail(id, emailTo.trim() || undefined);
+      setEmailSendState(result.success ? "sent" : "failed");
+      setEmailSendMessage(result.success ? "Email odoslaný." : (result.errors?.join(" ") ?? "Odoslanie zlyhalo"));
+      if (result.success) {
+        setShowEmailForm(false);
+        refreshSentEmails();
+      }
+    } catch (err) {
+      setEmailSendState("failed");
+      setEmailSendMessage(apiErrorMessage(err));
+    }
+  }
+
+  async function handleSendReminderNow() {
+    if (!id) return;
+    setReminderSendState("sending");
+    setReminderSendMessage(null);
+    try {
+      const result = await invoiceApi.sendReminderNow(id);
+      setReminderSendState(result.success ? "sent" : "failed");
+      setReminderSendMessage(result.success ? "Upomienka odoslaná." : (result.errors?.join(" ") ?? "Odoslanie zlyhalo"));
+      if (result.success) refreshSentEmails();
+    } catch (err) {
+      setReminderSendState("failed");
+      setReminderSendMessage(apiErrorMessage(err));
+    }
+  }
+
   if (error) return <Alert tone="danger">{error}</Alert>;
   if (!invoice) return <FullPageSpinner />;
 
@@ -164,11 +221,39 @@ export function InvoiceDetailPage() {
           <Button variant="secondary" onClick={() => window.open(invoiceApi.downloadUrl(invoice.id), "_blank")}>
             Stiahnuť XML
           </Button>
+          <Button variant="secondary" onClick={handleOpenEmailForm}>
+            Odoslať emailom
+          </Button>
           <Button variant="accent" loading={sendState === "sending"} onClick={handleSend}>
             {invoice.status === "SENT" ? "Odoslať znova" : "Odoslať cez SAPI-SK"}
           </Button>
         </div>
       </div>
+
+      {showEmailForm && (
+        <Card>
+          <CardHeader title="Odoslať faktúru emailom" description="PDF a XML sa pripoja ako prílohy." />
+          <CardBody className="flex flex-col gap-4">
+            {emailSendMessage && <Alert tone={emailSendState === "sent" ? "success" : "danger"}>{emailSendMessage}</Alert>}
+            <div className="flex flex-wrap items-end gap-3">
+              <Input
+                label="Email odberateľa"
+                type="email"
+                required
+                value={emailTo}
+                onChange={(e) => setEmailTo(e.target.value)}
+                className="max-w-xs"
+              />
+              <Button variant="accent" loading={emailSendState === "sending"} onClick={handleSendEmail}>
+                Odoslať
+              </Button>
+              <Button variant="ghost" onClick={() => setShowEmailForm(false)}>
+                Zrušiť
+              </Button>
+            </div>
+          </CardBody>
+        </Card>
+      )}
 
       {sendMessage && <Alert tone={sendState === "sent" ? "success" : "danger"}>{sendMessage}</Alert>}
 
@@ -182,6 +267,7 @@ export function InvoiceDetailPage() {
           />
           <CardBody className="flex flex-col gap-4">
             {paymentError && <Alert tone="danger">{paymentError}</Alert>}
+            {reminderSendMessage && <Alert tone={reminderSendState === "sent" ? "success" : "danger"}>{reminderSendMessage}</Alert>}
             {canRecordPayment && (
               <div className="flex flex-wrap items-end gap-3">
                 <Input
@@ -196,6 +282,9 @@ export function InvoiceDetailPage() {
                 />
                 <Button variant="secondary" loading={paymentBusy} onClick={handleRecordPayment}>
                   Zaznamenať úhradu
+                </Button>
+                <Button variant="secondary" loading={reminderSendState === "sending"} onClick={handleSendReminderNow}>
+                  Poslať upomienku teraz
                 </Button>
                 <Button variant="ghost" loading={paymentBusy} onClick={handleCancel} className="ml-auto text-danger-600">
                   Stornovať faktúru
@@ -265,6 +354,7 @@ export function InvoiceDetailPage() {
         <CardBody className="text-sm text-ink-700">
           <p className="font-medium text-ink-900">{invoice.customerName}</p>
           <p>DIČ: {invoice.customerDic}</p>
+          {invoice.customerEmail && <p>Email: {invoice.customerEmail}</p>}
         </CardBody>
       </Card>
 
@@ -311,6 +401,40 @@ export function InvoiceDetailPage() {
           </div>
         </CardBody>
       </Card>
+
+      {sentEmails && sentEmails.length > 0 && (
+        <Card>
+          <CardHeader title="Odoslané emaily" />
+          <CardBody className="overflow-x-auto">
+            <table className="w-full min-w-[560px] text-sm">
+              <thead>
+                <tr className="border-b border-line text-left text-xs font-medium uppercase tracking-wide text-ink-500">
+                  <th className="py-2">Typ</th>
+                  <th className="py-2">Komu</th>
+                  <th className="py-2">Predmet</th>
+                  <th className="py-2">Stav</th>
+                  <th className="py-2">Kedy</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sentEmails.map((e) => (
+                  <tr key={e.id} className="border-b border-line last:border-0">
+                    <td className="py-2">
+                      {e.type === "REMINDER" ? (e.reminderNumber ? `Upomienka č. ${e.reminderNumber}` : "Upomienka (manuálna)") : "Faktúra"}
+                    </td>
+                    <td className="py-2">{e.toEmail || "—"}</td>
+                    <td className="py-2">{e.subject}</td>
+                    <td className="py-2">
+                      <Badge tone={e.status === "SENT" ? "success" : "danger"}>{e.status === "SENT" ? "Odoslané" : "Zlyhalo"}</Badge>
+                    </td>
+                    <td className="py-2 text-ink-500">{formatDateTime(e.sentAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </CardBody>
+        </Card>
+      )}
 
       {invoice.xml && (
         <Card>

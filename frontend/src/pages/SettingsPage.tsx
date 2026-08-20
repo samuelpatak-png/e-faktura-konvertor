@@ -2,13 +2,38 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useLocation } from "react-router-dom";
 import { companyApi, apiErrorMessage } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import type { BrandingAsset, CompanyBrandingStatus, CompanyProfileInput, SapiSkStatus } from "../lib/types";
+import type { BrandingAsset, CompanyBrandingStatus, CompanyProfileInput, EmailSettingsInput, ReminderSettings, SapiSkStatus } from "../lib/types";
 import { Card, CardBody, CardHeader } from "../components/ui/Card";
-import { Input } from "../components/ui/Input";
+import { Input, Textarea } from "../components/ui/Input";
 import { Button } from "../components/ui/Button";
 import { Alert } from "../components/ui/Alert";
 import { Badge } from "../components/ui/Badge";
 import { FullPageSpinner } from "../components/ui/Spinner";
+
+const EMPTY_EMAIL_SETTINGS: EmailSettingsInput = {
+  smtpHost: "",
+  smtpPort: 587,
+  smtpSecure: false,
+  smtpUser: "",
+  smtpPassword: "",
+  fromEmail: "",
+  fromName: "",
+  subjectTemplate: "Faktúra {{invoiceNumber}}",
+  bodyTemplate:
+    "Dobrý deň,\n\nv prílohe posielame faktúru č. {{invoiceNumber}} na sumu {{amount}} so splatnosťou {{dueDate}}.\n\nS pozdravom",
+};
+
+const EMPTY_REMINDER_SETTINGS: ReminderSettings = {
+  enabled: false,
+  firstReminderDays: 7,
+  reminderCount: 3,
+  intervalDays: 7,
+  subjectTemplate: "Upomienka: Faktúra {{invoiceNumber}} po splatnosti",
+  bodyTemplate:
+    "Dobrý deň,\n\npripomíname, že faktúra č. {{invoiceNumber}} na sumu {{amount}} so splatnosťou {{dueDate}} nebola doteraz uhradená. Prosíme o úhradu v čo najkratšom čase.\n\nS pozdravom",
+};
+
+const TEMPLATE_VARS_HINT = "Dostupné premenné: {{invoiceNumber}}, {{amount}}, {{dueDate}}, {{customerName}}";
 
 const EMPTY_BRANDING: CompanyBrandingStatus = { logo: false, stamp: false, signature: false };
 
@@ -115,15 +140,41 @@ export function SettingsPage() {
   const [savingSapi, setSavingSapi] = useState(false);
   const [confirmLive, setConfirmLive] = useState(false);
 
+  const [emailSettings, setEmailSettings] = useState<EmailSettingsInput>(EMPTY_EMAIL_SETTINGS);
+  const [emailConfigured, setEmailConfigured] = useState(false);
+  const [emailError, setEmailError] = useState<string | null>(null);
+  const [emailSaved, setEmailSaved] = useState(false);
+  const [savingEmail, setSavingEmail] = useState(false);
+
+  const [reminderSettings, setReminderSettings] = useState<ReminderSettings>(EMPTY_REMINDER_SETTINGS);
+  const [reminderError, setReminderError] = useState<string | null>(null);
+  const [reminderSaved, setReminderSaved] = useState(false);
+  const [savingReminder, setSavingReminder] = useState(false);
+
   useEffect(() => {
-    Promise.all([companyApi.getProfile(), companyApi.getSapiStatus()])
-      .then(([p, s]) => {
+    Promise.all([companyApi.getProfile(), companyApi.getSapiStatus(), companyApi.getEmailSettings(), companyApi.getReminderSettings()])
+      .then(([p, s, e, r]) => {
         if (p) {
           setProfile(p);
           setHasProfile(true);
           setBranding({ logo: p.logo, stamp: p.stamp, signature: p.signature });
         }
         setSapiStatus(s);
+        if (e.configured) {
+          setEmailConfigured(true);
+          setEmailSettings({
+            smtpHost: e.smtpHost ?? "",
+            smtpPort: e.smtpPort ?? 587,
+            smtpSecure: e.smtpSecure ?? false,
+            smtpUser: e.smtpUser ?? "",
+            smtpPassword: "",
+            fromEmail: e.fromEmail ?? "",
+            fromName: e.fromName ?? "",
+            subjectTemplate: e.subjectTemplate ?? EMPTY_EMAIL_SETTINGS.subjectTemplate,
+            bodyTemplate: e.bodyTemplate ?? EMPTY_EMAIL_SETTINGS.bodyTemplate,
+          });
+        }
+        if (r) setReminderSettings(r);
       })
       .finally(() => setLoading(false));
   }, []);
@@ -207,6 +258,50 @@ export function SettingsPage() {
       setSapiStatus({ configured: false, mode: "mock" });
     } catch (err) {
       setSapiError(apiErrorMessage(err));
+    }
+  }
+
+  async function handleEmailSubmit(e: FormEvent) {
+    e.preventDefault();
+    setEmailError(null);
+    setEmailSaved(false);
+    setSavingEmail(true);
+    try {
+      await companyApi.saveEmailSettings(emailSettings);
+      setEmailConfigured(true);
+      setEmailSaved(true);
+      setEmailSettings((prev) => ({ ...prev, smtpPassword: "" }));
+    } catch (err) {
+      setEmailError(apiErrorMessage(err, "Nepodarilo sa uložiť SMTP nastavenia"));
+    } finally {
+      setSavingEmail(false);
+    }
+  }
+
+  async function handleDeleteEmail() {
+    setEmailError(null);
+    try {
+      await companyApi.deleteEmailSettings();
+      setEmailConfigured(false);
+      setEmailSettings(EMPTY_EMAIL_SETTINGS);
+    } catch (err) {
+      setEmailError(apiErrorMessage(err));
+    }
+  }
+
+  async function handleReminderSubmit(e: FormEvent) {
+    e.preventDefault();
+    setReminderError(null);
+    setReminderSaved(false);
+    setSavingReminder(true);
+    try {
+      const saved = await companyApi.saveReminderSettings(reminderSettings);
+      setReminderSettings(saved);
+      setReminderSaved(true);
+    } catch (err) {
+      setReminderError(apiErrorMessage(err, "Nepodarilo sa uložiť nastavenia upomienok"));
+    } finally {
+      setSavingReminder(false);
     }
   }
 
@@ -400,6 +495,166 @@ export function SettingsPage() {
               </Button>
             </form>
           )}
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader
+          title="Odosielanie emailom"
+          description="SMTP nastavenia pre odosielanie faktúr a upomienok. Väčšina firemných emailových schránok SMTP podporuje."
+          action={emailConfigured ? <Badge tone="success">Nastavené</Badge> : undefined}
+        />
+        <CardBody>
+          <form onSubmit={handleEmailSubmit} className="flex flex-col gap-4">
+            {emailError && <Alert tone="danger">{emailError}</Alert>}
+            {emailSaved && <Alert tone="success">SMTP nastavenia uložené.</Alert>}
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              <Input
+                label="SMTP server"
+                required
+                className="sm:col-span-2"
+                placeholder="smtp.gmail.com"
+                value={emailSettings.smtpHost}
+                onChange={(e) => setEmailSettings({ ...emailSettings, smtpHost: e.target.value })}
+              />
+              <Input
+                label="Port"
+                type="number"
+                required
+                value={emailSettings.smtpPort}
+                onChange={(e) => setEmailSettings({ ...emailSettings, smtpPort: Number(e.target.value) })}
+              />
+            </div>
+            <label className="flex items-center gap-2 text-sm text-ink-700">
+              <input
+                type="checkbox"
+                className="h-4 w-4 rounded border-line text-brand-600 focus:ring-brand-500"
+                checked={emailSettings.smtpSecure}
+                onChange={(e) => setEmailSettings({ ...emailSettings, smtpSecure: e.target.checked })}
+              />
+              Použiť šifrované pripojenie (TLS) — zvyčajne pre port 465
+            </label>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <Input
+                label="SMTP používateľ"
+                required
+                value={emailSettings.smtpUser}
+                onChange={(e) => setEmailSettings({ ...emailSettings, smtpUser: e.target.value })}
+              />
+              <Input
+                label="SMTP heslo"
+                type="password"
+                required
+                placeholder={emailConfigured ? "Nastavené — zadaj znova pri zmene" : undefined}
+                value={emailSettings.smtpPassword}
+                onChange={(e) => setEmailSettings({ ...emailSettings, smtpPassword: e.target.value })}
+                hint="Uloží sa zašifrovane, nikdy sa nezobrazí späť."
+              />
+            </div>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <Input
+                label="Odosielateľ (email)"
+                required
+                placeholder="faktury@mojafirma.sk"
+                value={emailSettings.fromEmail}
+                onChange={(e) => setEmailSettings({ ...emailSettings, fromEmail: e.target.value })}
+              />
+              <Input
+                label="Odosielateľ (názov)"
+                required
+                placeholder="Moja Firma s.r.o."
+                value={emailSettings.fromName}
+                onChange={(e) => setEmailSettings({ ...emailSettings, fromName: e.target.value })}
+              />
+            </div>
+            <Input
+              label="Predmet emailu s faktúrou"
+              required
+              value={emailSettings.subjectTemplate}
+              onChange={(e) => setEmailSettings({ ...emailSettings, subjectTemplate: e.target.value })}
+            />
+            <Textarea
+              label="Text emailu s faktúrou"
+              required
+              rows={5}
+              hint={TEMPLATE_VARS_HINT}
+              value={emailSettings.bodyTemplate}
+              onChange={(e) => setEmailSettings({ ...emailSettings, bodyTemplate: e.target.value })}
+            />
+            <div className="flex flex-wrap gap-3">
+              <Button type="submit" loading={savingEmail}>
+                Uložiť SMTP nastavenia
+              </Button>
+              {emailConfigured && (
+                <Button type="button" variant="danger" onClick={handleDeleteEmail}>
+                  Odstrániť SMTP nastavenia
+                </Button>
+              )}
+            </div>
+          </form>
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader title="Automatické upomienky" description="Pripomienky odberateľom pri faktúrach po splatnosti." />
+        <CardBody>
+          <form onSubmit={handleReminderSubmit} className="flex flex-col gap-4">
+            {reminderError && <Alert tone="danger">{reminderError}</Alert>}
+            {reminderSaved && <Alert tone="success">Nastavenia upomienok uložené.</Alert>}
+            {!emailConfigured && <Alert tone="info">Najprv nastav SMTP vyššie — bez neho sa upomienky nemajú ako odoslať.</Alert>}
+            <label className="flex items-center gap-2 text-sm text-ink-700">
+              <input
+                type="checkbox"
+                className="h-4 w-4 rounded border-line text-brand-600 focus:ring-brand-500"
+                checked={reminderSettings.enabled}
+                onChange={(e) => setReminderSettings({ ...reminderSettings, enabled: e.target.checked })}
+              />
+              Automaticky posielať upomienky na neuhradené faktúry po splatnosti
+            </label>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              <Input
+                label="Prvá upomienka (dní po splatnosti)"
+                type="number"
+                min={1}
+                required
+                value={reminderSettings.firstReminderDays}
+                onChange={(e) => setReminderSettings({ ...reminderSettings, firstReminderDays: Number(e.target.value) })}
+              />
+              <Input
+                label="Počet upomienok"
+                type="number"
+                min={1}
+                required
+                value={reminderSettings.reminderCount}
+                onChange={(e) => setReminderSettings({ ...reminderSettings, reminderCount: Number(e.target.value) })}
+              />
+              <Input
+                label="Odstup medzi upomienkami (dní)"
+                type="number"
+                min={1}
+                required
+                value={reminderSettings.intervalDays}
+                onChange={(e) => setReminderSettings({ ...reminderSettings, intervalDays: Number(e.target.value) })}
+              />
+            </div>
+            <Input
+              label="Predmet upomienky"
+              required
+              value={reminderSettings.subjectTemplate}
+              onChange={(e) => setReminderSettings({ ...reminderSettings, subjectTemplate: e.target.value })}
+            />
+            <Textarea
+              label="Text upomienky"
+              required
+              rows={5}
+              hint={TEMPLATE_VARS_HINT}
+              value={reminderSettings.bodyTemplate}
+              onChange={(e) => setReminderSettings({ ...reminderSettings, bodyTemplate: e.target.value })}
+            />
+            <Button type="submit" loading={savingReminder} className="self-start">
+              Uložiť nastavenia upomienok
+            </Button>
+          </form>
         </CardBody>
       </Card>
     </div>

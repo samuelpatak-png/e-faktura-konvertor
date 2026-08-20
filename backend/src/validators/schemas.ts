@@ -63,6 +63,43 @@ export const sapiSkCredentialSchema = z.object({
   clientSecret: z.string().trim().min(1),
 });
 
+// WP7: {{invoiceNumber}}/{{amount}}/{{dueDate}}/{{customerName}} — see services/emailTemplate.ts.
+// Bounded generously (5000 chars) since it's free text a non-technical user edits in a textarea.
+const templateTextSchema = (max: number) => z.string().trim().min(1).max(max);
+
+export const emailSettingsSchema = z.object({
+  smtpHost: z.string().trim().min(1).max(256),
+  smtpPort: z.number().int().min(1).max(65535),
+  smtpSecure: z.boolean(),
+  smtpUser: z.string().trim().min(1).max(256),
+  // Plaintext in the request body (over HTTPS, same as sapiSkCredentialSchema.clientSecret) —
+  // encrypted at rest by the controller via lib/crypto.ts, never returned back in a response.
+  smtpPassword: z.string().min(1),
+  fromEmail: z.string().trim().toLowerCase().email(),
+  fromName: templateTextSchema(256),
+  subjectTemplate: templateTextSchema(256),
+  bodyTemplate: templateTextSchema(5000),
+});
+
+export const reminderSettingsSchema = z.object({
+  enabled: z.boolean(),
+  firstReminderDays: z.number().int().min(1).max(365),
+  reminderCount: z.number().int().min(1).max(10),
+  intervalDays: z.number().int().min(1).max(365),
+  subjectTemplate: templateTextSchema(256),
+  bodyTemplate: templateTextSchema(5000),
+});
+
+// An explicit "to" override lets sending work even for an invoice created before this field
+// existed, or when the saved customerEmail was wrong — falls back to invoice.customerEmail
+// when omitted (see invoiceController.sendInvoiceEmail).
+export const sendInvoiceEmailSchema = z.object({
+  to: z.preprocess(
+    (v) => (v === "" || v === null || v === undefined ? undefined : v),
+    z.string().trim().toLowerCase().email("Neplatný formát emailu").optional()
+  ),
+});
+
 const dateSchema = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, "Dátum musí byť vo formáte YYYY-MM-DD")
@@ -92,6 +129,11 @@ export const invoiceLineSchema = z.object({
 // MVP scope: domestic SK-to-SK Peppol invoicing only (matches the brief and the current
 // SK CIUS/mandate research). Both parties need a scheme-0245 Peppol ID (their DIČ).
 // Cross-border customers under a different country's identifier scheme aren't supported yet.
+const nullableOptionalEmail = z.preprocess(
+  (v) => (v === "" || v === null || v === undefined ? null : v),
+  z.union([z.null(), z.string().trim().toLowerCase().email("Neplatný formát emailu")])
+);
+
 export const customerSchema = z.object({
   name: nameSchema,
   ico: nullableOptionalString(/^\d{8}$/, "IČO musí mať presne 8 číslic"),
@@ -101,6 +143,9 @@ export const customerSchema = z.object({
   city: z.string().trim().min(1).max(128),
   postalCode: postalCodeSchema,
   country: z.string().trim().length(2).default("SK"),
+  // WP7: not part of the legal Peppol document — see schema.prisma Invoice.customerEmail — used
+  // only to know who to send the invoice/reminder emails to.
+  email: nullableOptionalEmail,
 });
 
 export const invoiceInputSchema = z
@@ -148,10 +193,7 @@ export const partnerSchema = z.object({
   countryCode: z.string().trim().length(2).default("SK"),
   peppolScheme: nullableOptionalString(/^\d{4}$/, "Peppol scheme musí mať 4 číslice"),
   peppolId: optionalTrimmedString(64, "Peppol ID môže mať najviac 64 znakov"),
-  email: z.preprocess(
-    (v) => (v === "" || v === null || v === undefined ? null : v),
-    z.union([z.null(), z.string().trim().email("Neplatný formát emailu")])
-  ),
+  email: nullableOptionalEmail,
   note: optionalTrimmedString(1000, "Poznámka môže mať najviac 1000 znakov"),
   category: optionalTrimmedString(64, "Kategória môže mať najviac 64 znakov"),
 });
