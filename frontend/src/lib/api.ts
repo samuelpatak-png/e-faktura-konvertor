@@ -16,6 +16,7 @@ import type {
   PriceListItemInput,
   PriceListItemUpdateInput,
   PriceListResult,
+  ReceivedInvoice,
   SapiSendResult,
   SapiSkStatus,
   UnpaidSummary,
@@ -99,6 +100,20 @@ export const priceListApi = {
   create: (data: PriceListItemInput) => api.post<PriceListItem>("/price-list", data).then((r) => r.data),
   update: (id: string, data: PriceListItemUpdateInput) => api.put<PriceListItem>(`/price-list/${id}`, data).then((r) => r.data),
   remove: (id: string) => api.delete(`/price-list/${id}`),
+};
+
+export const receivedInvoiceApi = {
+  list: () => api.get<ReceivedInvoice[]>("/received-invoice").then((r) => r.data),
+  get: (id: string) => api.get<ReceivedInvoice>(`/received-invoice/${id}`).then((r) => r.data),
+  upload: (file: File) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    return api.post<ReceivedInvoice>("/received-invoice/upload", formData).then((r) => r.data);
+  },
+  downloadUrl: (id: string) => `/api/received-invoice/${id}/download`,
+  recordPayment: (id: string, amountCents: number) =>
+    api.post<ReceivedInvoice>(`/received-invoice/${id}/payments`, { amountCents }).then((r) => r.data),
+  remove: (id: string) => api.delete(`/received-invoice/${id}`),
 };
 
 export const pdfApi = {

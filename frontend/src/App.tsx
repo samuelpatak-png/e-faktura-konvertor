@@ -14,6 +14,8 @@ import { PartnerFormPage } from "./pages/PartnerFormPage";
 import { PriceListPage } from "./pages/PriceListPage";
 import { PriceListItemFormPage } from "./pages/PriceListItemFormPage";
 import { UnpaidPage } from "./pages/UnpaidPage";
+import { ReceivedInvoicesPage } from "./pages/ReceivedInvoicesPage";
+import { ReceivedInvoiceDetailPage } from "./pages/ReceivedInvoiceDetailPage";
 
 export default function App() {
   return (
@@ -30,6 +32,8 @@ export default function App() {
             <Route path="invoices" element={<InvoiceHistoryPage />} />
             <Route path="invoices/unpaid" element={<UnpaidPage />} />
             <Route path="invoices/:id" element={<InvoiceDetailPage />} />
+            <Route path="received-invoices" element={<ReceivedInvoicesPage />} />
+            <Route path="received-invoices/:id" element={<ReceivedInvoiceDetailPage />} />
             <Route path="partners" element={<PartnersPage />} />
             <Route path="partners/new" element={<PartnerFormPage />} />
             <Route path="partners/:id" element={<PartnerFormPage />} />
