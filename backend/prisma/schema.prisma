@@ -63,6 +63,13 @@ enum InvoiceStatus {
   SEND_FAILED
 }
 
+enum PaymentStatus {
+  UNPAID
+  PARTIALLY_PAID
+  PAID
+  CANCELLED
+}
+
 model Invoice {
   id     String @id @default(cuid())
   userId String
@@ -104,6 +111,13 @@ model Invoice {
   xml                   String? // generated UBL XML, once generated
   sapiProviderDocumentId String?
   sentAt                 DateTime?
+
+  // Payment tracking (WP3). `overdue`/`daysOverdue` are intentionally NOT columns — they're
+  // derived from dueDate + paymentStatus + "now" at read time, see services/paymentStatus.ts.
+  // A stored overdue flag would go stale the instant a day passes without a write.
+  paidAmountCents Int           @default(0)
+  paidAt          DateTime?
+  paymentStatus   PaymentStatus @default(UNPAID)
 
   lines InvoiceLine[]
 

@@ -27,3 +27,19 @@ export function invoiceStatusTone(status: string): "neutral" | "success" | "dang
   if (status === "GENERATED") return "brand";
   return "neutral";
 }
+
+export const PAYMENT_STATUS_LABELS: Record<string, string> = {
+  UNPAID: "Neuhradená",
+  PARTIALLY_PAID: "Čiastočne uhradená",
+  PAID: "Uhradená",
+  CANCELLED: "Stornovaná",
+};
+
+// UNPAID on its own isn't alarming (most invoices sit unpaid until their due date) — overdue-ness
+// is shown separately (a dedicated "days overdue" indicator), not folded into this badge's color.
+export function paymentStatusTone(status: string): "neutral" | "success" | "warning" | "danger" {
+  if (status === "PAID") return "success";
+  if (status === "PARTIALLY_PAID") return "warning";
+  if (status === "CANCELLED") return "neutral";
+  return "neutral"; // UNPAID
+}

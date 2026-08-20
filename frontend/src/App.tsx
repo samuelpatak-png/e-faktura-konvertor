@@ -13,6 +13,7 @@ import { PartnersPage } from "./pages/PartnersPage";
 import { PartnerFormPage } from "./pages/PartnerFormPage";
 import { PriceListPage } from "./pages/PriceListPage";
 import { PriceListItemFormPage } from "./pages/PriceListItemFormPage";
+import { UnpaidPage } from "./pages/UnpaidPage";
 
 export default function App() {
   return (
@@ -27,6 +28,7 @@ export default function App() {
             <Route index element={<Navigate to="new" replace />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route path="invoices" element={<InvoiceHistoryPage />} />
+            <Route path="invoices/unpaid" element={<UnpaidPage />} />
             <Route path="invoices/:id" element={<InvoiceDetailPage />} />
             <Route path="partners" element={<PartnersPage />} />
             <Route path="partners/new" element={<PartnerFormPage />} />

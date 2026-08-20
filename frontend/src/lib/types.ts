@@ -127,6 +127,8 @@ export interface GenerateResult {
   errors?: string[];
 }
 
+export type PaymentStatus = "UNPAID" | "PARTIALLY_PAID" | "PAID" | "CANCELLED";
+
 export interface InvoiceListItem {
   id: string;
   number: string;
@@ -138,6 +140,27 @@ export interface InvoiceListItem {
   currency: string;
   sentAt: string | null;
   createdAt: string;
+  paymentStatus: PaymentStatus;
+  paidAmountCents: number;
+  paidAt: string | null;
+  overdue: boolean;
+  daysOverdue: number;
+}
+
+export interface UnpaidSummaryBucket {
+  count: number;
+  amountCents: number;
+}
+
+export interface UnpaidSummary {
+  totalOutstandingCents: number;
+  count: number;
+  buckets: {
+    notYetDue: UnpaidSummaryBucket;
+    days0to30: UnpaidSummaryBucket;
+    days31to60: UnpaidSummaryBucket;
+    days60plus: UnpaidSummaryBucket;
+  };
 }
 
 export interface InvoiceLineDetail {

@@ -17,6 +17,7 @@ import type {
   PriceListResult,
   SapiSendResult,
   SapiSkStatus,
+  UnpaidSummary,
   User,
   ValidationResult,
 } from "./types";
@@ -74,6 +75,9 @@ export const invoiceApi = {
   get: (id: string) => api.get<InvoiceDetail>(`/invoice/${id}`).then((r) => r.data),
   downloadUrl: (id: string) => `/api/invoice/${id}/download`,
   sendSapi: (id: string) => api.post<SapiSendResult>(`/invoice/${id}/send-sapi`).then((r) => r.data),
+  recordPayment: (id: string, amountCents: number) => api.post<InvoiceDetail>(`/invoice/${id}/payments`, { amountCents }).then((r) => r.data),
+  cancel: (id: string) => api.post<InvoiceDetail>(`/invoice/${id}/cancel`).then((r) => r.data),
+  unpaidSummary: () => api.get<UnpaidSummary>("/invoice/unpaid-summary").then((r) => r.data),
 };
 
 export const partnerApi = {
