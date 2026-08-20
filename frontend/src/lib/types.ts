@@ -290,6 +290,51 @@ export interface PriceListResult {
   pageSize: number;
 }
 
+export interface ReceivedInvoiceLine {
+  description: string;
+  quantity: number;
+  unitCode: string;
+  unitPriceCents: number;
+  taxRatePercent: number;
+  lineNetCents: number;
+}
+
+export interface ReceivedInvoice {
+  id: string;
+  documentType: DocumentType;
+  number: string;
+  issueDate: string;
+  dueDate: string | null;
+  currency: string;
+  supplierName: string;
+  supplierIco: string | null;
+  supplierDic: string | null;
+  supplierIcDph: string | null;
+  supplierStreet: string | null;
+  supplierCity: string | null;
+  supplierPostalCode: string | null;
+  supplierCountry: string | null;
+  customerName: string | null;
+  customerDic: string | null;
+  netAmountCents: number;
+  taxAmountCents: number;
+  grossAmountCents: number;
+  grossAmount: number;
+  lines: ReceivedInvoiceLine[];
+  paidAmountCents: number;
+  paidAt: string | null;
+  paymentStatus: PaymentStatus;
+  overdue: boolean;
+  daysOverdue: number;
+  fileName: string | null;
+  ourErrors: string[];
+  ourWarnings: string[];
+  kositAcceptable: boolean | null;
+  kositMessages: string[];
+  kositAvailable?: boolean;
+  createdAt: string;
+}
+
 export interface SapiSendResult {
   success: boolean;
   mock: boolean;
