@@ -214,4 +214,114 @@ describe("companyController", () => {
       expect(res.statusCode).toBe(404);
     });
   });
+
+  const validEmailSettingsBody = {
+    smtpHost: "smtp.example.com",
+    smtpPort: 587,
+    smtpSecure: false,
+    smtpUser: "faktury@mojafirma.sk",
+    smtpPassword: "app-password-123",
+    fromEmail: "faktury@mojafirma.sk",
+    fromName: "Moja Firma s.r.o.",
+    subjectTemplate: "Faktúra {{invoiceNumber}}",
+    bodyTemplate: "Text {{invoiceNumber}}",
+  };
+
+  describe("getEmailSettings / saveEmailSettings / deleteEmailSettings", () => {
+    it("returns configured: false when nothing is saved yet", async () => {
+      const res = mockRes();
+      await companyController.getEmailSettings(mockReq(userA.id), res);
+      expect(res.body).toEqual({ configured: false });
+    });
+
+    it("saves SMTP settings and never returns the password (plaintext or encrypted) back", async () => {
+      const res = mockRes();
+      await companyController.saveEmailSettings(mockReq(userA.id, { body: validEmailSettingsBody }), res);
+      expect(res.statusCode).toBe(200);
+      const body = res.body as Record<string, unknown>;
+      expect(body.configured).toBe(true);
+      expect(body.smtpHost).toBe("smtp.example.com");
+      expect(body).not.toHaveProperty("smtpPassword");
+      expect(body).not.toHaveProperty("encryptedSmtpPassword");
+    });
+
+    it("encrypts the password at rest — the raw DB row never contains the plaintext", async () => {
+      await companyController.saveEmailSettings(mockReq(userA.id, { body: validEmailSettingsBody }), mockRes());
+      const row = await prisma.emailSettings.findUnique({ where: { userId: userA.id } });
+      expect(row?.encryptedSmtpPassword).not.toContain("app-password-123");
+    });
+
+    it("rejects invalid input (bad fromEmail) with 400", async () => {
+      const res = mockRes();
+      await companyController.saveEmailSettings(mockReq(userA.id, { body: { ...validEmailSettingsBody, fromEmail: "not-an-email" } }), res);
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("getEmailSettings reflects a subsequent save via GET", async () => {
+      await companyController.saveEmailSettings(mockReq(userA.id, { body: validEmailSettingsBody }), mockRes());
+      const res = mockRes();
+      await companyController.getEmailSettings(mockReq(userA.id), res);
+      expect((res.body as { configured: boolean }).configured).toBe(true);
+    });
+
+    it("deleteEmailSettings removes the row", async () => {
+      await companyController.saveEmailSettings(mockReq(userA.id, { body: validEmailSettingsBody }), mockRes());
+      await companyController.deleteEmailSettings(mockReq(userA.id), mockRes());
+      const res = mockRes();
+      await companyController.getEmailSettings(mockReq(userA.id), res);
+      expect(res.body).toEqual({ configured: false });
+    });
+
+    it("user A's email settings never leak into user B's GET", async () => {
+      await companyController.saveEmailSettings(mockReq(userA.id, { body: validEmailSettingsBody }), mockRes());
+      const res = mockRes();
+      await companyController.getEmailSettings(mockReq(userB.id), res);
+      expect(res.body).toEqual({ configured: false });
+    });
+  });
+
+  const validReminderSettingsBody = {
+    enabled: true,
+    firstReminderDays: 7,
+    reminderCount: 3,
+    intervalDays: 7,
+    subjectTemplate: "Upomienka {{invoiceNumber}}",
+    bodyTemplate: "Text {{invoiceNumber}}",
+  };
+
+  describe("getReminderSettings / saveReminderSettings", () => {
+    it("returns null when nothing is saved yet", async () => {
+      const res = mockRes();
+      await companyController.getReminderSettings(mockReq(userA.id), res);
+      expect(res.body).toBeNull();
+    });
+
+    it("saves and returns the reminder cadence config", async () => {
+      const res = mockRes();
+      await companyController.saveReminderSettings(mockReq(userA.id, { body: validReminderSettingsBody }), res);
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toMatchObject({ enabled: true, firstReminderDays: 7, reminderCount: 3, intervalDays: 7 });
+    });
+
+    it("upserts on a second save instead of erroring", async () => {
+      await companyController.saveReminderSettings(mockReq(userA.id, { body: validReminderSettingsBody }), mockRes());
+      const res = mockRes();
+      await companyController.saveReminderSettings(mockReq(userA.id, { body: { ...validReminderSettingsBody, reminderCount: 5 } }), res);
+      expect(res.statusCode).toBe(200);
+      expect((res.body as { reminderCount: number }).reminderCount).toBe(5);
+    });
+
+    it("rejects a zero reminderCount with 400", async () => {
+      const res = mockRes();
+      await companyController.saveReminderSettings(mockReq(userA.id, { body: { ...validReminderSettingsBody, reminderCount: 0 } }), res);
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("user A's reminder settings never leak into user B's GET", async () => {
+      await companyController.saveReminderSettings(mockReq(userA.id, { body: validReminderSettingsBody }), mockRes());
+      const res = mockRes();
+      await companyController.getReminderSettings(mockReq(userB.id), res);
+      expect(res.body).toBeNull();
+    });
+  });
 });

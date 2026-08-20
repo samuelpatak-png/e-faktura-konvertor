@@ -6,6 +6,8 @@ import type {
   CompanyProfileWithBranding,
   CompanyRegistryLookupResult,
   CreditNoteInput,
+  EmailSettingsInput,
+  EmailSettingsStatus,
   ExtractedInvoiceData,
   GenerateResult,
   InvoiceDetail,
@@ -20,8 +22,10 @@ import type {
   PriceListItemUpdateInput,
   PriceListResult,
   ReceivedInvoice,
+  ReminderSettings,
   SapiSendResult,
   SapiSkStatus,
+  SentEmail,
   UnpaidSummary,
   User,
   ValidationResult,
@@ -79,6 +83,13 @@ export const companyApi = {
   },
   removeBrandingAsset: (asset: BrandingAsset) =>
     api.delete<CompanyBrandingStatus>(`/company/branding/${asset}`).then((r) => r.data),
+  getEmailSettings: () => api.get<EmailSettingsStatus>("/company/email-settings").then((r) => r.data),
+  saveEmailSettings: (data: EmailSettingsInput) =>
+    api.put<EmailSettingsStatus>("/company/email-settings", data).then((r) => r.data),
+  deleteEmailSettings: () => api.delete("/company/email-settings"),
+  getReminderSettings: () => api.get<ReminderSettings | null>("/company/reminder-settings").then((r) => r.data),
+  saveReminderSettings: (data: ReminderSettings) =>
+    api.put<ReminderSettings>("/company/reminder-settings", data).then((r) => r.data),
 };
 
 export const invoiceApi = {
@@ -93,6 +104,11 @@ export const invoiceApi = {
   cancel: (id: string) => api.post<InvoiceDetail>(`/invoice/${id}/cancel`).then((r) => r.data),
   unpaidSummary: () => api.get<UnpaidSummary>("/invoice/unpaid-summary").then((r) => r.data),
   createCreditNote: (id: string, data: CreditNoteInput) => api.post<GenerateResult>(`/invoice/${id}/credit-note`, data).then((r) => r.data),
+  sendEmail: (id: string, to?: string) =>
+    api.post<{ success: boolean; errors?: string[] }>(`/invoice/${id}/send-email`, to ? { to } : {}).then((r) => r.data),
+  sendReminderNow: (id: string) =>
+    api.post<{ success: boolean; errors?: string[] }>(`/invoice/${id}/send-reminder`).then((r) => r.data),
+  listSentEmails: (id: string) => api.get<SentEmail[]>(`/invoice/${id}/emails`).then((r) => r.data),
 };
 
 export const partnerApi = {

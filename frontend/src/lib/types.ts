@@ -88,6 +88,8 @@ export interface CustomerInput {
   city: string;
   postalCode: string;
   country: string;
+  // WP7 — who to email the invoice/reminders to; not part of the legal UBL document.
+  email?: string | null;
 }
 
 export interface InvoiceLineInput {
@@ -204,6 +206,7 @@ export interface InvoiceDetail extends InvoiceListItem {
   supplierName: string;
   supplierDic: string;
   customerDic: string;
+  customerEmail: string | null;
   netAmountCents: number;
   taxAmountCents: number;
   grossAmountCents: number;
@@ -214,6 +217,51 @@ export interface InvoiceDetail extends InvoiceListItem {
   prepaidReference: string | null;
   original: { id: string; number: string; issueDate: string } | null;
   corrections: { id: string; number: string; issueDate: string; grossAmountCents: number }[];
+}
+
+// WP7: email sending + reminders.
+export interface EmailSettingsStatus {
+  configured: boolean;
+  smtpHost?: string;
+  smtpPort?: number;
+  smtpSecure?: boolean;
+  smtpUser?: string;
+  fromEmail?: string;
+  fromName?: string;
+  subjectTemplate?: string;
+  bodyTemplate?: string;
+}
+
+export interface EmailSettingsInput {
+  smtpHost: string;
+  smtpPort: number;
+  smtpSecure: boolean;
+  smtpUser: string;
+  smtpPassword: string;
+  fromEmail: string;
+  fromName: string;
+  subjectTemplate: string;
+  bodyTemplate: string;
+}
+
+export interface ReminderSettings {
+  enabled: boolean;
+  firstReminderDays: number;
+  reminderCount: number;
+  intervalDays: number;
+  subjectTemplate: string;
+  bodyTemplate: string;
+}
+
+export interface SentEmail {
+  id: string;
+  type: "INVOICE" | "REMINDER";
+  reminderNumber: number | null;
+  toEmail: string;
+  subject: string;
+  status: "SENT" | "FAILED";
+  errorMessage: string | null;
+  sentAt: string;
 }
 
 export interface ExtractedField<T> {

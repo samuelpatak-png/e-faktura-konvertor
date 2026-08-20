@@ -1,14 +1,18 @@
 import type { Request, Response } from "express";
 import { prisma } from "../lib/prisma";
 import type { CompanyProfile, Invoice } from "@prisma/client";
-import { invoiceInputSchema, recordPaymentSchema, creditNoteInputSchema, type InvoiceInput } from "../validators/schemas";
-import { computeInvoiceTotals, centsToEur, taxBreakdownFromLines, type ComputedInvoiceTotals } from "../services/invoiceMath";
+import { invoiceInputSchema, recordPaymentSchema, creditNoteInputSchema, sendInvoiceEmailSchema, type InvoiceInput } from "../validators/schemas";
+import { computeInvoiceTotals, centsToEur, formatEurCents, type ComputedInvoiceTotals } from "../services/invoiceMath";
 import { validateComputedInvoice, type ValidationResult } from "../services/invoiceValidator";
 import { generateInvoiceXml, generateCreditNoteXml } from "../services/xmlGenerator";
-import { generateInvoicePdf, type PdfInvoiceInput, type BrandingImage } from "../services/pdfGenerator";
+import { generateInvoicePdf, formatDateSk } from "../services/pdfGenerator";
+import { buildPdfInvoiceInput } from "../services/invoicePdfInput";
 import { decryptSecret } from "../lib/crypto";
 import { sendInvoiceViaSapiSk } from "../services/sapiSkClient";
 import { computePaymentStatus, isOverdue, daysOverdue, agingBucket } from "../services/paymentStatus";
+import { sendEmail } from "../services/emailSender";
+import { renderTemplate } from "../services/emailTemplate";
+import { sendReminderForInvoice } from "../services/reminderScheduler";
 
 async function loadSupplier(userId: string) {
   return prisma.companyProfile.findUnique({ where: { userId } });
@@ -169,6 +173,7 @@ export async function generateInvoice(req: Request, res: Response) {
         customerCity: data.customer.city,
         customerPostalCode: data.customer.postalCode,
         customerCountry: data.customer.country,
+        customerEmail: data.customer.email,
         netAmountCents: totals.netAmountCents,
         taxAmountCents: totals.taxAmountCents,
         grossAmountCents: totals.grossAmountCents,
@@ -248,11 +253,6 @@ export async function downloadInvoice(req: Request, res: Response) {
   res.send(invoice.xml);
 }
 
-function brandingImage(data: string | null, mimeType: string | null): BrandingImage | undefined {
-  if (!data || !mimeType) return undefined;
-  return { data: Buffer.from(data, "base64"), mimeType };
-}
-
 export async function downloadInvoicePdf(req: Request, res: Response) {
   const invoice = await prisma.invoice.findFirst({
     where: { id: req.params.id, userId: req.userId! },
@@ -267,55 +267,7 @@ export async function downloadInvoicePdf(req: Request, res: Response) {
   // generation time (unlike supplier name/address/IBAN, which are frozen on the Invoice row).
   const profile = await prisma.companyProfile.findUnique({ where: { userId: req.userId! } });
 
-  const input: PdfInvoiceInput = {
-    documentType: invoice.documentType,
-    number: invoice.number,
-    issueDate: invoice.issueDate,
-    // CreditNoteType has no DueDate concept in UBL (see createCreditNote above) — the DB column
-    // is only ever populated with a non-meaningful placeholder for those rows, so don't print it.
-    dueDate: invoice.documentType === "CREDIT_NOTE" ? null : invoice.dueDate,
-    buyerReference: invoice.buyerReference,
-    currency: invoice.currency,
-    supplier: {
-      name: invoice.supplierName,
-      ico: invoice.supplierIco,
-      dic: invoice.supplierDic,
-      icDph: invoice.supplierIcDph,
-      street: invoice.supplierStreet,
-      city: invoice.supplierCity,
-      postalCode: invoice.supplierPostalCode,
-      country: invoice.supplierCountry,
-      iban: invoice.supplierIban,
-      bic: invoice.supplierBic,
-    },
-    customer: {
-      name: invoice.customerName,
-      ico: invoice.customerIco,
-      dic: invoice.customerDic,
-      icDph: invoice.customerIcDph,
-      street: invoice.customerStreet,
-      city: invoice.customerCity,
-      postalCode: invoice.customerPostalCode,
-      country: invoice.customerCountry,
-    },
-    lines: invoice.lines,
-    netAmountCents: invoice.netAmountCents,
-    taxAmountCents: invoice.taxAmountCents,
-    grossAmountCents: invoice.grossAmountCents,
-    taxBreakdown: taxBreakdownFromLines(invoice.lines),
-    prepaidAmountCents: invoice.prepaidAmountCents ?? undefined,
-    originalInvoiceNumber: invoice.original?.number,
-    xmlContent: invoice.xml,
-    branding: profile
-      ? {
-          logo: brandingImage(profile.logoData, profile.logoMimeType),
-          stamp: brandingImage(profile.stampData, profile.stampMimeType),
-          signature: brandingImage(profile.signatureData, profile.signatureMimeType),
-        }
-      : undefined,
-  };
-
-  const pdf = await generateInvoicePdf(input);
+  const pdf = await generateInvoicePdf(buildPdfInvoiceInput(invoice, profile));
   const safeFilename = invoice.number.replace(/[^a-zA-Z0-9._-]/g, "_");
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Content-Disposition", `attachment; filename="faktura_${safeFilename}.pdf"`);
@@ -569,6 +521,7 @@ export async function createCreditNote(req: Request, res: Response) {
         customerCity: original.customerCity,
         customerPostalCode: original.customerPostalCode,
         customerCountry: original.customerCountry,
+        customerEmail: original.customerEmail,
         netAmountCents: totals.netAmountCents,
         taxAmountCents: totals.taxAmountCents,
         grossAmountCents: totals.grossAmountCents,
@@ -594,4 +547,117 @@ export async function createCreditNote(req: Request, res: Response) {
     }
     throw err;
   }
+}
+
+function invoiceTemplateVars(invoice: Pick<Invoice, "number" | "grossAmountCents" | "dueDate" | "customerName">) {
+  return {
+    invoiceNumber: invoice.number,
+    amount: formatEurCents(invoice.grossAmountCents),
+    dueDate: formatDateSk(invoice.dueDate),
+    customerName: invoice.customerName,
+  };
+}
+
+// WP7: emailing an invoice never touches Invoice.status/sentAt/sapiProviderDocumentId — those
+// track the legally-recognized SAPI-SK/Peppol delivery specifically (see sendInvoiceViaSapi
+// above). A courtesy PDF+XML email is a separate channel, tracked entirely via SentEmail.
+export async function sendInvoiceEmail(req: Request, res: Response) {
+  const parsed = sendInvoiceEmailSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ success: false, errors: ["Neplatný email."] });
+  }
+
+  const invoice = await prisma.invoice.findFirst({
+    where: { id: req.params.id, userId: req.userId! },
+    include: { lines: { orderBy: { sortOrder: "asc" } }, original: { select: { number: true } } },
+  });
+  if (!invoice || !invoice.xml) return res.status(404).json({ success: false, errors: ["Faktúra nenájdená"] });
+
+  const to = parsed.data.to ?? invoice.customerEmail;
+  if (!to) {
+    return res.status(400).json({ success: false, errors: ["Faktúra nemá email odberateľa — zadaj ho."] });
+  }
+
+  const emailSettings = await prisma.emailSettings.findUnique({ where: { userId: req.userId! } });
+  if (!emailSettings) {
+    return res.status(400).json({ success: false, errors: ["Najprv nastav SMTP v Nastaveniach."] });
+  }
+
+  const profile = await prisma.companyProfile.findUnique({ where: { userId: req.userId! } });
+  const pdf = await generateInvoicePdf(buildPdfInvoiceInput(invoice, profile));
+
+  const vars = invoiceTemplateVars(invoice);
+  const subject = renderTemplate(emailSettings.subjectTemplate, vars);
+  const body = renderTemplate(emailSettings.bodyTemplate, vars);
+
+  const result = await sendEmail({
+    smtp: {
+      host: emailSettings.smtpHost,
+      port: emailSettings.smtpPort,
+      secure: emailSettings.smtpSecure,
+      user: emailSettings.smtpUser,
+      password: decryptSecret(emailSettings.encryptedSmtpPassword),
+      fromEmail: emailSettings.fromEmail,
+      fromName: emailSettings.fromName,
+    },
+    to,
+    subject,
+    text: body,
+    attachments: [
+      { filename: `faktura_${invoice.number}.pdf`, content: pdf, contentType: "application/pdf" },
+      { filename: `faktura_${invoice.number}.xml`, content: Buffer.from(invoice.xml, "utf8"), contentType: "application/xml" },
+    ],
+  });
+
+  await prisma.sentEmail.create({
+    data: {
+      userId: req.userId!,
+      invoiceId: invoice.id,
+      type: "INVOICE",
+      toEmail: to,
+      subject,
+      status: result.success ? "SENT" : "FAILED",
+      errorMessage: result.error,
+    },
+  });
+
+  if (!result.success) return res.status(502).json({ success: false, errors: [result.error ?? "Odoslanie zlyhalo"] });
+  res.json({ success: true });
+}
+
+// Manual "Poslať upomienku teraz" — always logged with reminderNumber 0, a sentinel distinct
+// from the scheduler's 1-based numbering, so a manual send never gets mistaken for (or blocks
+// re-sending) a specific scheduled reminder. sendReminderForInvoice's own paid/cancelled guard
+// applies here too — this button can't be used to violate that rule either.
+export async function sendReminderNow(req: Request, res: Response) {
+  const invoice = await prisma.invoice.findFirst({
+    where: { id: req.params.id, userId: req.userId! },
+    include: { lines: { orderBy: { sortOrder: "asc" } } },
+  });
+  if (!invoice) return res.status(404).json({ success: false, errors: ["Faktúra nenájdená"] });
+  if (invoice.documentType !== "INVOICE") {
+    return res.status(400).json({ success: false, errors: ["Upomienku možno poslať len k bežnej faktúre."] });
+  }
+
+  const emailSettings = await prisma.emailSettings.findUnique({ where: { userId: req.userId! } });
+  if (!emailSettings) {
+    return res.status(400).json({ success: false, errors: ["Najprv nastav SMTP v Nastaveniach."] });
+  }
+
+  const reminderSettings = await prisma.reminderSettings.findUnique({ where: { userId: req.userId! } });
+  const subjectTemplate = reminderSettings?.subjectTemplate ?? "Upomienka: Faktúra {{invoiceNumber}} po splatnosti";
+  const bodyTemplate =
+    reminderSettings?.bodyTemplate ??
+    "Dobrý deň,\n\npripomíname, že faktúra č. {{invoiceNumber}} na sumu {{amount}} so splatnosťou {{dueDate}} nebola doteraz uhradená. Prosíme o úhradu v čo najkratšom čase.\n\nS pozdravom";
+
+  const result = await sendReminderForInvoice(invoice, emailSettings, 0, bodyTemplate, subjectTemplate);
+  if (!result.success) return res.status(400).json({ success: false, errors: [result.error ?? "Odoslanie zlyhalo"] });
+  res.json({ success: true });
+}
+
+export async function listSentEmails(req: Request, res: Response) {
+  const invoice = await prisma.invoice.findFirst({ where: { id: req.params.id, userId: req.userId! } });
+  if (!invoice) return res.status(404).json({ error: "Faktúra nenájdená" });
+  const emails = await prisma.sentEmail.findMany({ where: { invoiceId: invoice.id }, orderBy: { sentAt: "desc" } });
+  res.json(emails);
 }

@@ -37,4 +37,11 @@ router.put("/sapi-credentials", asyncHandler(companyController.setSapiSkCredenti
 router.patch("/sapi-credentials/mode", asyncHandler(companyController.setSapiSkMode));
 router.delete("/sapi-credentials", asyncHandler(companyController.deleteSapiSkCredential));
 
+router.get("/email-settings", asyncHandler(companyController.getEmailSettings));
+router.put("/email-settings", asyncHandler(companyController.saveEmailSettings));
+router.delete("/email-settings", asyncHandler(companyController.deleteEmailSettings));
+
+router.get("/reminder-settings", asyncHandler(companyController.getReminderSettings));
+router.put("/reminder-settings", asyncHandler(companyController.saveReminderSettings));
+
 export default router;

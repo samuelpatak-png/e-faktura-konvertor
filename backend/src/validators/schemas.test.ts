@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { invoiceLineSchema, partnerSchema, priceListItemSchema } from "./schemas";
+import { customerSchema, emailSettingsSchema, invoiceLineSchema, partnerSchema, priceListItemSchema, reminderSettingsSchema, sendInvoiceEmailSchema } from "./schemas";
 
 const base = {
   description: "Test",
@@ -123,5 +123,111 @@ describe("priceListItemSchema", () => {
 
   it("accepts null description and sku", () => {
     expect(priceListItemSchema.safeParse({ ...validPriceListItem, description: null, sku: null }).success).toBe(true);
+  });
+});
+
+describe("customerSchema email field (WP7)", () => {
+  const validCustomer = {
+    name: "Odberateľ s.r.o.",
+    ico: null,
+    dic: "2222222222",
+    icDph: null,
+    street: "Ulica 2",
+    city: "Košice",
+    postalCode: "04001",
+    country: "SK",
+    email: null,
+  };
+
+  it("accepts a customer with no email (optional — SAPI-SK delivery doesn't need one)", () => {
+    expect(customerSchema.safeParse(validCustomer).success).toBe(true);
+  });
+
+  it("accepts a valid email and lowercases it", () => {
+    const result = customerSchema.safeParse({ ...validCustomer, email: "Odberatel@Example.COM" });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.email).toBe("odberatel@example.com");
+  });
+
+  it("rejects a malformed email instead of silently accepting it", () => {
+    expect(customerSchema.safeParse({ ...validCustomer, email: "not-an-email" }).success).toBe(false);
+  });
+});
+
+const validEmailSettings = {
+  smtpHost: "smtp.example.com",
+  smtpPort: 587,
+  smtpSecure: false,
+  smtpUser: "faktury@mojafirma.sk",
+  smtpPassword: "app-password-123",
+  fromEmail: "faktury@mojafirma.sk",
+  fromName: "Moja Firma s.r.o.",
+  subjectTemplate: "Faktúra {{invoiceNumber}}",
+  bodyTemplate: "Dobrý deň, v prílohe posielame faktúru {{invoiceNumber}}.",
+};
+
+describe("emailSettingsSchema", () => {
+  it("accepts a fully populated config", () => {
+    expect(emailSettingsSchema.safeParse(validEmailSettings).success).toBe(true);
+  });
+
+  it("rejects an out-of-range port", () => {
+    expect(emailSettingsSchema.safeParse({ ...validEmailSettings, smtpPort: 70000 }).success).toBe(false);
+    expect(emailSettingsSchema.safeParse({ ...validEmailSettings, smtpPort: 0 }).success).toBe(false);
+  });
+
+  it("rejects a malformed fromEmail", () => {
+    expect(emailSettingsSchema.safeParse({ ...validEmailSettings, fromEmail: "not-an-email" }).success).toBe(false);
+  });
+
+  it("rejects an empty SMTP password", () => {
+    expect(emailSettingsSchema.safeParse({ ...validEmailSettings, smtpPassword: "" }).success).toBe(false);
+  });
+
+  it("rejects an empty subject or body template", () => {
+    expect(emailSettingsSchema.safeParse({ ...validEmailSettings, subjectTemplate: "" }).success).toBe(false);
+    expect(emailSettingsSchema.safeParse({ ...validEmailSettings, bodyTemplate: "" }).success).toBe(false);
+  });
+});
+
+const validReminderSettings = {
+  enabled: true,
+  firstReminderDays: 7,
+  reminderCount: 3,
+  intervalDays: 7,
+  subjectTemplate: "Upomienka {{invoiceNumber}}",
+  bodyTemplate: "Faktúra {{invoiceNumber}} nebola uhradená.",
+};
+
+describe("reminderSettingsSchema", () => {
+  it("accepts a fully populated config", () => {
+    expect(reminderSettingsSchema.safeParse(validReminderSettings).success).toBe(true);
+  });
+
+  it("rejects a zero or negative reminderCount", () => {
+    expect(reminderSettingsSchema.safeParse({ ...validReminderSettings, reminderCount: 0 }).success).toBe(false);
+    expect(reminderSettingsSchema.safeParse({ ...validReminderSettings, reminderCount: -1 }).success).toBe(false);
+  });
+
+  it("rejects a non-integer intervalDays", () => {
+    expect(reminderSettingsSchema.safeParse({ ...validReminderSettings, intervalDays: 3.5 }).success).toBe(false);
+  });
+});
+
+describe("sendInvoiceEmailSchema", () => {
+  it("accepts an omitted `to` (falls back to the invoice's saved customerEmail)", () => {
+    const result = sendInvoiceEmailSchema.safeParse({});
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.to).toBeUndefined();
+  });
+
+  it("accepts an empty string `to` the same as omitted", () => {
+    const result = sendInvoiceEmailSchema.safeParse({ to: "" });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.to).toBeUndefined();
+  });
+
+  it("rejects a malformed `to` override", () => {
+    expect(sendInvoiceEmailSchema.safeParse({ to: "not-an-email" }).success).toBe(false);
   });
 });

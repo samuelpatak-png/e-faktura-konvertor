@@ -35,6 +35,12 @@ export function centsToEur(cents: number): number {
   return new Decimal(cents).dividedBy(100).toNumber();
 }
 
+/** "123,00 €" — sk-SK formatted, shared by the PDF and the email template renderer so an
+ * amount never reads differently between the two. */
+export function formatEurCents(cents: number): string {
+  return new Intl.NumberFormat("sk-SK", { style: "currency", currency: "EUR" }).format(centsToEur(cents));
+}
+
 /**
  * Computes all line and invoice-level amounts from scratch off the submitted line items.
  * We never trust client-supplied totals — this is the single source of truth, which

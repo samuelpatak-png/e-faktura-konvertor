@@ -23,7 +23,7 @@ function plusDays(isoDate: string, days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-const EMPTY_CUSTOMER: CustomerInput = { name: "", ico: "", dic: "", icDph: "", street: "", city: "", postalCode: "", country: "SK" };
+const EMPTY_CUSTOMER: CustomerInput = { name: "", ico: "", dic: "", icDph: "", street: "", city: "", postalCode: "", country: "SK", email: "" };
 
 function emptyLines(): InvoiceLineInput[] {
   return [{ description: "", quantity: 1, unitCode: "C62", unitPrice: 0, taxRatePercent: 23 }];
@@ -93,7 +93,7 @@ export function InvoiceConverterPage() {
         countryCode: customer.country,
         peppolScheme: null,
         peppolId: null,
-        email: null,
+        email: customer.email || null,
         note: null,
         category: null,
       });
@@ -113,6 +113,7 @@ export function InvoiceConverterPage() {
       city: partner.city,
       postalCode: partner.postalCode,
       country: partner.countryCode,
+      email: partner.email ?? "",
     });
     invalidateValidation();
   }
@@ -135,7 +136,7 @@ export function InvoiceConverterPage() {
 
   function buildInput(): InvoiceInput {
     return {
-      customer: { ...customer, icDph: customer.icDph || undefined, ico: customer.ico || undefined },
+      customer: { ...customer, icDph: customer.icDph || undefined, ico: customer.ico || undefined, email: customer.email || undefined },
       number,
       issueDate,
       dueDate,
@@ -309,6 +310,16 @@ export function InvoiceConverterPage() {
             value={customer.icDph ?? ""}
             onChange={(e) => {
               setCustomer({ ...customer, icDph: e.target.value });
+              invalidateValidation();
+            }}
+          />
+          <Input
+            label="Email"
+            type="email"
+            hint="Na tento email pôjde faktúra a prípadné upomienky"
+            value={customer.email ?? ""}
+            onChange={(e) => {
+              setCustomer({ ...customer, email: e.target.value });
               invalidateValidation();
             }}
           />

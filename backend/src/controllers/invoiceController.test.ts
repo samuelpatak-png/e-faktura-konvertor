@@ -1,6 +1,9 @@
 import type { Request, Response } from "express";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { SMTPServer } from "smtp-server";
+import { simpleParser, type ParsedMail } from "mailparser";
 import { prisma } from "../lib/prisma";
+import { encryptSecret } from "../lib/crypto";
 import * as invoiceController from "./invoiceController";
 
 function mockReq(userId: string, overrides: Partial<{ params: Record<string, string>; query: Record<string, string>; body: unknown }> = {}): Request {
@@ -38,7 +41,7 @@ async function createUser(email: string) {
 
 async function createInvoice(
   userId: string,
-  overrides: Partial<{ number: string; dueDate: string; grossAmountCents: number; documentType: "INVOICE" | "CREDIT_NOTE" | "ADVANCE_TAX_DOCUMENT"; originalInvoiceId: string; supplierIcDph: string | null; xml: string | null; prepaidAmountCents: number }> = {}
+  overrides: Partial<{ number: string; dueDate: string; grossAmountCents: number; documentType: "INVOICE" | "CREDIT_NOTE" | "ADVANCE_TAX_DOCUMENT"; originalInvoiceId: string; supplierIcDph: string | null; xml: string | null; prepaidAmountCents: number; customerEmail: string | null }> = {}
 ) {
   return prisma.invoice.create({
     data: {
@@ -68,6 +71,7 @@ async function createInvoice(
       customerCity: "Košice",
       customerPostalCode: "04001",
       customerCountry: "SK",
+      customerEmail: overrides.customerEmail !== undefined ? overrides.customerEmail : "odberatel@example.com",
       netAmountCents: 10000,
       taxAmountCents: 0,
       grossAmountCents: overrides.grossAmountCents ?? 10000,
@@ -104,6 +108,65 @@ async function createCompanyProfile(userId: string, overrides: Partial<{ icDph: 
     },
   });
 }
+
+// WP7: a real local SMTP server (not a mock of nodemailer) for send-email controller tests —
+// see emailSender.test.ts for why. Module-scoped (not inside one describe block) so both the
+// sendInvoiceEmail and sendReminderNow test groups below can use it.
+let emailTestServer: SMTPServer;
+let emailTestPort: number;
+let receivedEmails: ParsedMail[] = [];
+
+beforeAll(async () => {
+  emailTestServer = new SMTPServer({
+    authOptional: true,
+    disabledCommands: ["STARTTLS"],
+    onAuth(_auth, _session, callback) {
+      callback(null, { user: "test" });
+    },
+    onData(stream, _session, callback) {
+      const chunks: Buffer[] = [];
+      stream.on("data", (chunk: Buffer) => chunks.push(chunk));
+      stream.on("end", () => {
+        simpleParser(Buffer.concat(chunks))
+          .then((parsed) => {
+            receivedEmails.push(parsed);
+            callback();
+          })
+          .catch((err) => callback(err));
+      });
+    },
+  });
+  await new Promise<void>((resolve, reject) => {
+    emailTestServer.listen(0, "127.0.0.1", () => resolve());
+    emailTestServer.on("error", reject);
+  });
+  const address = emailTestServer.server.address();
+  emailTestPort = typeof address === "object" && address ? address.port : 0;
+});
+
+afterAll(async () => {
+  await new Promise<void>((resolve) => emailTestServer.close(() => resolve()));
+});
+
+afterEach(() => {
+  receivedEmails = [];
+});
+
+async function createEmailSettings(userId: string) {
+  return prisma.emailSettings.create({
+    data: {
+      userId,
+      smtpHost: "127.0.0.1",
+      smtpPort: emailTestPort,
+      smtpSecure: false,
+      smtpUser: "test@example.com",
+      encryptedSmtpPassword: encryptSecret("secret"),
+      fromEmail: "faktury@mojafirma.sk",
+      fromName: "Moja Firma s.r.o.",
+    },
+  });
+}
+
 
 function validInvoiceBody(overrides: Record<string, unknown> = {}) {
   return {
@@ -537,6 +600,153 @@ describe("invoiceController payments", () => {
       await invoiceController.downloadInvoicePdf(mockReq(userA.id, { params: { id: invoice.id } }), res);
       expect(res.statusCode).toBe(200);
       expect((res.body as Buffer).subarray(0, 4).toString()).toBe("%PDF");
+    });
+  });
+
+  describe("sendInvoiceEmail", () => {
+    it("sends a real email with PDF+XML attachments to the invoice's saved customerEmail and logs it as SENT", async () => {
+      await createEmailSettings(userA.id);
+      const invoice = await createInvoice(userA.id, { customerEmail: "odberatel@example.com" });
+
+      const res = mockRes();
+      await invoiceController.sendInvoiceEmail(mockReq(userA.id, { params: { id: invoice.id } }), res);
+
+      expect(res.statusCode).toBe(200);
+      expect(receivedEmails).toHaveLength(1);
+      const msg = receivedEmails[0];
+      expect(msg.to && "value" in msg.to ? msg.to.value[0].address : undefined).toBe("odberatel@example.com");
+      expect(msg.attachments.some((a) => a.filename?.endsWith(".pdf"))).toBe(true);
+      expect(msg.attachments.some((a) => a.filename?.endsWith(".xml"))).toBe(true);
+
+      const logged = await prisma.sentEmail.findFirst({ where: { invoiceId: invoice.id } });
+      expect(logged).toMatchObject({ type: "INVOICE", status: "SENT", toEmail: "odberatel@example.com" });
+    });
+
+    it("uses an explicit `to` override instead of the invoice's saved customerEmail when one is given", async () => {
+      await createEmailSettings(userA.id);
+      const invoice = await createInvoice(userA.id, { customerEmail: "saved@example.com" });
+
+      const res = mockRes();
+      await invoiceController.sendInvoiceEmail(mockReq(userA.id, { params: { id: invoice.id }, body: { to: "override@example.com" } }), res);
+
+      expect(res.statusCode).toBe(200);
+      const msg = receivedEmails[0];
+      expect(msg.to && "value" in msg.to ? msg.to.value[0].address : undefined).toBe("override@example.com");
+    });
+
+    it("rejects with a clear message when the invoice has no customerEmail and no override was given", async () => {
+      await createEmailSettings(userA.id);
+      const invoice = await createInvoice(userA.id, { customerEmail: null });
+
+      const res = mockRes();
+      await invoiceController.sendInvoiceEmail(mockReq(userA.id, { params: { id: invoice.id } }), res);
+
+      expect(res.statusCode).toBe(400);
+      expect(receivedEmails).toHaveLength(0);
+    });
+
+    it("rejects with a clear message when SMTP hasn't been configured yet", async () => {
+      const invoice = await createInvoice(userA.id);
+      const res = mockRes();
+      await invoiceController.sendInvoiceEmail(mockReq(userA.id, { params: { id: invoice.id } }), res);
+      expect(res.statusCode).toBe(400);
+      expect(receivedEmails).toHaveLength(0);
+    });
+
+    it("returns 404 for a non-existent invoice", async () => {
+      await createEmailSettings(userA.id);
+      const res = mockRes();
+      await invoiceController.sendInvoiceEmail(mockReq(userA.id, { params: { id: "does-not-exist" } }), res);
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("user A cannot email user B's invoice", async () => {
+      await createEmailSettings(userA.id);
+      const invoice = await createInvoice(userB.id);
+      const res = mockRes();
+      await invoiceController.sendInvoiceEmail(mockReq(userA.id, { params: { id: invoice.id } }), res);
+      expect(res.statusCode).toBe(404);
+      expect(receivedEmails).toHaveLength(0);
+    });
+  });
+
+  describe("sendReminderNow", () => {
+    it("sends a manual reminder for an eligible invoice", async () => {
+      await createEmailSettings(userA.id);
+      const invoice = await createInvoice(userA.id);
+
+      const res = mockRes();
+      await invoiceController.sendReminderNow(mockReq(userA.id, { params: { id: invoice.id } }), res);
+
+      expect(res.statusCode).toBe(200);
+      expect(receivedEmails).toHaveLength(1);
+      const logged = await prisma.sentEmail.findFirst({ where: { invoiceId: invoice.id } });
+      expect(logged).toMatchObject({ type: "REMINDER", reminderNumber: 0, status: "SENT" });
+    });
+
+    it("uses the company's saved reminder subject/body template, not the built-in fallback", async () => {
+      await createEmailSettings(userA.id);
+      await prisma.reminderSettings.create({
+        data: { userId: userA.id, enabled: true, subjectTemplate: "Vlastný predmet {{invoiceNumber}}", bodyTemplate: "Vlastný text {{invoiceNumber}}" },
+      });
+      const invoice = await createInvoice(userA.id);
+
+      const res = mockRes();
+      await invoiceController.sendReminderNow(mockReq(userA.id, { params: { id: invoice.id } }), res);
+
+      expect(res.statusCode).toBe(200);
+      expect(receivedEmails[0].subject).toBe("Vlastný predmet 2026-0001");
+      expect(receivedEmails[0].text?.trim()).toBe("Vlastný text 2026-0001");
+    });
+
+    it("never sends a manual reminder for a paid invoice — same guard as the automatic scheduler", async () => {
+      await createEmailSettings(userA.id);
+      const invoice = await createInvoice(userA.id);
+      await invoiceController.recordPayment(mockReq(userA.id, { params: { id: invoice.id }, body: { amountCents: 10000 } }), mockRes());
+
+      const res = mockRes();
+      await invoiceController.sendReminderNow(mockReq(userA.id, { params: { id: invoice.id } }), res);
+
+      expect(res.statusCode).toBe(400);
+      expect(receivedEmails).toHaveLength(0);
+    });
+
+    it("refuses to send a reminder for a credit note", async () => {
+      await createEmailSettings(userA.id);
+      const creditNote = await createInvoice(userA.id, { documentType: "CREDIT_NOTE" });
+      const res = mockRes();
+      await invoiceController.sendReminderNow(mockReq(userA.id, { params: { id: creditNote.id } }), res);
+      expect(res.statusCode).toBe(400);
+      expect(receivedEmails).toHaveLength(0);
+    });
+
+    it("user A cannot trigger a reminder on user B's invoice", async () => {
+      await createEmailSettings(userA.id);
+      const invoice = await createInvoice(userB.id);
+      const res = mockRes();
+      await invoiceController.sendReminderNow(mockReq(userA.id, { params: { id: invoice.id } }), res);
+      expect(res.statusCode).toBe(404);
+      expect(receivedEmails).toHaveLength(0);
+    });
+  });
+
+  describe("listSentEmails", () => {
+    it("lists sent emails for an invoice, most recent first", async () => {
+      await createEmailSettings(userA.id);
+      const invoice = await createInvoice(userA.id);
+      await invoiceController.sendInvoiceEmail(mockReq(userA.id, { params: { id: invoice.id } }), mockRes());
+
+      const res = mockRes();
+      await invoiceController.listSentEmails(mockReq(userA.id, { params: { id: invoice.id } }), res);
+      expect(res.statusCode).toBe(200);
+      expect(res.body as unknown[]).toHaveLength(1);
+    });
+
+    it("user A cannot list user B's sent emails", async () => {
+      const invoice = await createInvoice(userB.id);
+      const res = mockRes();
+      await invoiceController.listSentEmails(mockReq(userA.id, { params: { id: invoice.id } }), res);
+      expect(res.statusCode).toBe(404);
     });
   });
 });

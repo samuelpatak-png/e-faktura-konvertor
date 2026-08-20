@@ -1,5 +1,6 @@
 const currencyFormatter = new Intl.NumberFormat("sk-SK", { style: "currency", currency: "EUR" });
 const dateFormatter = new Intl.DateTimeFormat("sk-SK", { day: "numeric", month: "numeric", year: "numeric" });
+const dateTimeFormatter = new Intl.DateTimeFormat("sk-SK", { day: "numeric", month: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" });
 
 export function formatEur(amount: number): string {
   return currencyFormatter.format(amount);
@@ -8,6 +9,11 @@ export function formatEur(amount: number): string {
 export function formatDate(isoDate: string): string {
   if (!isoDate) return "";
   return dateFormatter.format(new Date(isoDate));
+}
+
+export function formatDateTime(isoDateTime: string): string {
+  if (!isoDateTime) return "";
+  return dateTimeFormatter.format(new Date(isoDateTime));
 }
 
 export function centsToEur(cents: number): number {

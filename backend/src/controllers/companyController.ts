@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
+import type { EmailSettings } from "@prisma/client";
 import { prisma } from "../lib/prisma";
-import { companyProfileSchema, sapiSkCredentialSchema } from "../validators/schemas";
+import { companyProfileSchema, sapiSkCredentialSchema, emailSettingsSchema, reminderSettingsSchema } from "../validators/schemas";
 import { encryptSecret } from "../lib/crypto";
 
 type BrandingAsset = "logo" | "stamp" | "signature";
@@ -131,4 +132,53 @@ export async function setSapiSkMode(req: Request, res: Response) {
 export async function deleteSapiSkCredential(req: Request, res: Response) {
   await prisma.sapiSkCredential.deleteMany({ where: { userId: req.userId! } });
   res.status(204).send();
+}
+
+function emailSettingsDto(settings: EmailSettings) {
+  // Never send the encrypted (or any) password back — same rule as SapiSkCredential.
+  const { encryptedSmtpPassword: _encryptedSmtpPassword, ...rest } = settings;
+  return { ...rest, configured: true };
+}
+
+export async function getEmailSettings(req: Request, res: Response) {
+  const settings = await prisma.emailSettings.findUnique({ where: { userId: req.userId! } });
+  if (!settings) return res.json({ configured: false });
+  res.json(emailSettingsDto(settings));
+}
+
+export async function saveEmailSettings(req: Request, res: Response) {
+  const parsed = emailSettingsSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Neplatné údaje", details: parsed.error.flatten().fieldErrors });
+  }
+  const { smtpPassword, ...rest } = parsed.data;
+  const settings = await prisma.emailSettings.upsert({
+    where: { userId: req.userId! },
+    create: { userId: req.userId!, ...rest, encryptedSmtpPassword: encryptSecret(smtpPassword) },
+    update: { ...rest, encryptedSmtpPassword: encryptSecret(smtpPassword) },
+  });
+  res.json(emailSettingsDto(settings));
+}
+
+export async function deleteEmailSettings(req: Request, res: Response) {
+  await prisma.emailSettings.deleteMany({ where: { userId: req.userId! } });
+  res.status(204).send();
+}
+
+export async function getReminderSettings(req: Request, res: Response) {
+  const settings = await prisma.reminderSettings.findUnique({ where: { userId: req.userId! } });
+  res.json(settings);
+}
+
+export async function saveReminderSettings(req: Request, res: Response) {
+  const parsed = reminderSettingsSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Neplatné údaje", details: parsed.error.flatten().fieldErrors });
+  }
+  const settings = await prisma.reminderSettings.upsert({
+    where: { userId: req.userId! },
+    create: { userId: req.userId!, ...parsed.data },
+    update: { ...parsed.data },
+  });
+  res.json(settings);
 }
