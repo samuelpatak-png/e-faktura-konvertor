@@ -26,9 +26,9 @@ function nullableOptionalString(regex: RegExp, message: string) {
   );
 }
 
-const icoSchema = z.string().regex(/^\d{8}$/, "IČO musí mať presne 8 číslic");
-const dicSchema = z.string().regex(/^\d{10}$/, "DIČ musí mať presne 10 číslic");
-const icDphSchema = nullableOptionalString(/^SK\d{10}$/, "IČ DPH musí byť v tvare SK + 10 číslic");
+export const icoSchema = z.string().regex(/^\d{8}$/, "IČO musí mať presne 8 číslic");
+export const dicSchema = z.string().regex(/^\d{10}$/, "DIČ musí mať presne 10 číslic");
+export const icDphSchema = nullableOptionalString(/^SK\d{10}$/, "IČ DPH musí byť v tvare SK + 10 číslic");
 const ibanSchema = z
   .string()
   .transform((v) => v.replace(/\s+/g, "").toUpperCase())
@@ -38,8 +38,8 @@ const ibanSchema = z
       .regex(/^SK\d{22}$/, "IBAN musí byť v tvare SK + 22 číslic")
       .refine(isValidIbanChecksum, "Neplatný IBAN (nesedí kontrolný súčet) — skontroluj preklep")
   );
-const nameSchema = z.string().trim().min(1).max(256);
-const postalCodeSchema = z
+export const nameSchema = z.string().trim().min(1).max(256);
+export const postalCodeSchema = z
   .string()
   .transform((v) => v.replace(/\s+/g, ""))
   .pipe(z.string().regex(/^\d{5}$/, "PSČ musí mať 5 číslic"));
@@ -117,3 +117,51 @@ export const invoiceInputSchema = z
 
 export type InvoiceInput = z.infer<typeof invoiceInputSchema>;
 export type CompanyProfileInput = z.infer<typeof companyProfileSchema>;
+
+// Required fields mirror customerSchema exactly (name/dic/street/city/postalCode required,
+// ico/icDph optional) so every saved partner is immediately usable to prefill a fully valid
+// invoice customer — no separate "draft contact" concept.
+const optionalTrimmedString = (max: number, message?: string) =>
+  z.preprocess(
+    (v) => (v === "" || v === null || v === undefined ? null : v),
+    z.union([z.null(), z.string().trim().max(max, message)])
+  );
+
+export const partnerSchema = z.object({
+  name: nameSchema,
+  ico: nullableOptionalString(/^\d{8}$/, "IČO musí mať presne 8 číslic"),
+  dic: dicSchema,
+  icDph: icDphSchema,
+  street: z.string().trim().min(1).max(256),
+  city: z.string().trim().min(1).max(128),
+  postalCode: postalCodeSchema,
+  countryCode: z.string().trim().length(2).default("SK"),
+  peppolScheme: nullableOptionalString(/^\d{4}$/, "Peppol scheme musí mať 4 číslice"),
+  peppolId: optionalTrimmedString(64, "Peppol ID môže mať najviac 64 znakov"),
+  email: z.preprocess(
+    (v) => (v === "" || v === null || v === undefined ? null : v),
+    z.union([z.null(), z.string().trim().email("Neplatný formát emailu")])
+  ),
+  note: optionalTrimmedString(1000, "Poznámka môže mať najviac 1000 znakov"),
+  category: optionalTrimmedString(64, "Kategória môže mať najviac 64 znakov"),
+});
+
+export const partnerUpdateSchema = partnerSchema.extend({
+  isActive: z.boolean(),
+});
+
+export const partnerListQuerySchema = z.object({
+  q: z.string().trim().max(256).optional(),
+  // Exact match (not a substring search like `q`) — used to check "does a partner with this
+  // exact DIČ already exist" (e.g. the invoice form's "save to registry" prompt). `q` can't be
+  // reused for this: it only searches name/ico, so a DIČ passed as `q` would almost never match.
+  dic: z.string().trim().optional(),
+  page: z.coerce.number().int().positive().default(1),
+  pageSize: z.coerce.number().int().positive().max(100).default(20),
+  // z.coerce.boolean() would treat the string "false" as truthy (non-empty string) — only
+  // literal "true"/"1" query values should turn this on.
+  includeInactive: z.preprocess((v) => v === "true" || v === "1", z.boolean()).default(false),
+});
+
+export type PartnerInput = z.infer<typeof partnerSchema>;
+export type PartnerUpdateInput = z.infer<typeof partnerUpdateSchema>;

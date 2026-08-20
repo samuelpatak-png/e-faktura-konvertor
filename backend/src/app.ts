@@ -6,6 +6,7 @@ import authRoutes from "./routes/auth.routes";
 import companyRoutes from "./routes/company.routes";
 import invoiceRoutes from "./routes/invoice.routes";
 import pdfRoutes from "./routes/pdf.routes";
+import partnerRoutes from "./routes/partner.routes";
 import { errorHandler } from "./middleware/errorHandler";
 
 export const app = express();
@@ -20,5 +21,6 @@ app.use("/api/auth", authRoutes);
 app.use("/api/company", companyRoutes);
 app.use("/api/invoice", invoiceRoutes);
 app.use("/api/pdf", pdfRoutes);
+app.use("/api/partner", partnerRoutes);
 
 app.use(errorHandler);

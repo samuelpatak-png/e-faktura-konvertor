@@ -33,6 +33,9 @@ export function AppShell() {
               <NavLink to="/app/invoices" className={NAV_LINK_CLASS}>
                 História
               </NavLink>
+              <NavLink to="/app/partners" className={NAV_LINK_CLASS}>
+                Odberatelia
+              </NavLink>
               <NavLink to="/app/settings" className={NAV_LINK_CLASS}>
                 Nastavenia
               </NavLink>
@@ -54,6 +57,9 @@ export function AppShell() {
           </NavLink>
           <NavLink to="/app/invoices" className={NAV_LINK_CLASS}>
             História
+          </NavLink>
+          <NavLink to="/app/partners" className={NAV_LINK_CLASS}>
+            Odberatelia
           </NavLink>
           <NavLink to="/app/settings" className={NAV_LINK_CLASS}>
             Nastavenia

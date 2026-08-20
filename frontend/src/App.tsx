@@ -9,6 +9,8 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { InvoiceConverterPage } from "./pages/InvoiceConverterPage";
 import { InvoiceHistoryPage } from "./pages/InvoiceHistoryPage";
 import { InvoiceDetailPage } from "./pages/InvoiceDetailPage";
+import { PartnersPage } from "./pages/PartnersPage";
+import { PartnerFormPage } from "./pages/PartnerFormPage";
 
 export default function App() {
   return (
@@ -24,6 +26,9 @@ export default function App() {
             <Route path="settings" element={<SettingsPage />} />
             <Route path="invoices" element={<InvoiceHistoryPage />} />
             <Route path="invoices/:id" element={<InvoiceDetailPage />} />
+            <Route path="partners" element={<PartnersPage />} />
+            <Route path="partners/new" element={<PartnerFormPage />} />
+            <Route path="partners/:id" element={<PartnerFormPage />} />
             <Route element={<RequireCompanyProfile />}>
               <Route path="new" element={<InvoiceConverterPage />} />
             </Route>
