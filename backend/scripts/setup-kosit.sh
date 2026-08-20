@@ -16,15 +16,25 @@ CONFIG_URL="https://github.com/itplr-kosit/validator-configuration-bis/releases/
 mkdir -p "$TOOLS_DIR"
 cd "$TOOLS_DIR"
 
+# -f makes curl exit non-zero on a 4xx/5xx response instead of writing the error body to the
+# output file as if it were the real asset. Combined with downloading to a .tmp path and only
+# renaming into place on success, a failed download can never leave a file at the final path —
+# so the idempotency checks below can't be poisoned into treating a broken download (e.g. an
+# HTML 404 page saved as "validator.jar") as already-present forever, and CI's actions/cache
+# (keyed on this script's hash, not the downloaded content) can't pin a broken asset in place
+# across runs.
 if [ ! -f "validator-${VALIDATOR_VERSION}-standalone.jar" ]; then
   echo "Downloading KOSIT validator ${VALIDATOR_VERSION}..."
-  curl -sL -o "validator-${VALIDATOR_VERSION}-standalone.jar" "$VALIDATOR_URL"
+  curl -fsSL -o "validator-${VALIDATOR_VERSION}-standalone.jar.tmp" "$VALIDATOR_URL"
+  mv "validator-${VALIDATOR_VERSION}-standalone.jar.tmp" "validator-${VALIDATOR_VERSION}-standalone.jar"
 fi
 
 if [ ! -d "bis-config-${CONFIG_VERSION}" ]; then
   echo "Downloading Peppol BIS validator configuration ${CONFIG_VERSION}..."
-  curl -sL -o "bis-config-${CONFIG_VERSION}.zip" "$CONFIG_URL"
-  unzip -q "bis-config-${CONFIG_VERSION}.zip" -d "bis-config-${CONFIG_VERSION}"
+  curl -fsSL -o "bis-config-${CONFIG_VERSION}.zip.tmp" "$CONFIG_URL"
+  mv "bis-config-${CONFIG_VERSION}.zip.tmp" "bis-config-${CONFIG_VERSION}.zip"
+  unzip -q "bis-config-${CONFIG_VERSION}.zip" -d "bis-config-${CONFIG_VERSION}.tmp"
+  mv "bis-config-${CONFIG_VERSION}.tmp" "bis-config-${CONFIG_VERSION}"
   rm "bis-config-${CONFIG_VERSION}.zip"
 fi
 

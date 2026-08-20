@@ -18,8 +18,11 @@ TOOLS_DIR="$(cd "$BACKEND_DIR/tools/kosit" && pwd)"
 
 # Prefer `java` on PATH (what CI's actions/setup-java provides); fall back to the common
 # Homebrew keg-only location for local macOS dev where openjdk isn't symlinked system-wide.
+# Must actually invoke it, not just check `command -v` — on macOS without a JDK registered,
+# /usr/bin/java exists on PATH as a stub that prints "Unable to locate a Java Runtime" and
+# exits non-zero, which `command -v` alone can't distinguish from a working install.
 JAVA_BIN="java"
-if ! command -v java >/dev/null 2>&1; then
+if ! java -version >/dev/null 2>&1; then
   if [ -x "/opt/homebrew/opt/openjdk@21/bin/java" ]; then
     JAVA_BIN="/opt/homebrew/opt/openjdk@21/bin/java"
   elif [ -x "/usr/local/opt/openjdk@21/bin/java" ]; then
