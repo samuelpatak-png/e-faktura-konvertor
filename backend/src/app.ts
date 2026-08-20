@@ -7,6 +7,7 @@ import companyRoutes from "./routes/company.routes";
 import invoiceRoutes from "./routes/invoice.routes";
 import pdfRoutes from "./routes/pdf.routes";
 import partnerRoutes from "./routes/partner.routes";
+import priceListRoutes from "./routes/priceList.routes";
 import { errorHandler } from "./middleware/errorHandler";
 
 export const app = express();
@@ -22,5 +23,6 @@ app.use("/api/company", companyRoutes);
 app.use("/api/invoice", invoiceRoutes);
 app.use("/api/pdf", pdfRoutes);
 app.use("/api/partner", partnerRoutes);
+app.use("/api/price-list", priceListRoutes);
 
 app.use(errorHandler);

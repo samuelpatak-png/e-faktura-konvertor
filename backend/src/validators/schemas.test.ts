@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { invoiceLineSchema, partnerSchema } from "./schemas";
+import { invoiceLineSchema, partnerSchema, priceListItemSchema } from "./schemas";
 
 const base = {
   description: "Test",
@@ -40,6 +40,14 @@ describe("invoiceLineSchema", () => {
     // zod's .safeParse accepts unknown input at compile time — this is a runtime check.
     const result = invoiceLineSchema.safeParse({ ...base, taxRatePercent: 21 });
     expect(result.success).toBe(false);
+  });
+
+  it("accepts a unit code from the wider UN/ECE Rec 20 set added in WP2, not just the original 6", () => {
+    expect(invoiceLineSchema.safeParse({ ...base, unitCode: "MTK" }).success).toBe(true);
+  });
+
+  it("rejects a unit code that isn't a real UN/ECE Rec 20 code", () => {
+    expect(invoiceLineSchema.safeParse({ ...base, unitCode: "NOT_A_REAL_CODE" }).success).toBe(false);
   });
 });
 
@@ -84,5 +92,36 @@ describe("partnerSchema", () => {
 
   it("rejects an IČO that isn't exactly 8 digits", () => {
     expect(partnerSchema.safeParse({ ...validPartner, ico: "123" }).success).toBe(false);
+  });
+});
+
+const validPriceListItem = {
+  name: "Konzultačná hodina",
+  description: null,
+  unitCode: "HUR",
+  unitPrice: 45.5,
+  vatRate: 23,
+  sku: null,
+};
+
+describe("priceListItemSchema", () => {
+  it("accepts a fully populated item", () => {
+    expect(priceListItemSchema.safeParse(validPriceListItem).success).toBe(true);
+  });
+
+  it("rejects an invalid unit code", () => {
+    expect(priceListItemSchema.safeParse({ ...validPriceListItem, unitCode: "NOT_A_REAL_CODE" }).success).toBe(false);
+  });
+
+  it("rejects a price with more than 2 decimal places", () => {
+    expect(priceListItemSchema.safeParse({ ...validPriceListItem, unitPrice: 0.125 }).success).toBe(false);
+  });
+
+  it("rejects an unsupported VAT rate", () => {
+    expect(priceListItemSchema.safeParse({ ...validPriceListItem, vatRate: 21 }).success).toBe(false);
+  });
+
+  it("accepts null description and sku", () => {
+    expect(priceListItemSchema.safeParse({ ...validPriceListItem, description: null, sku: null }).success).toBe(true);
   });
 });

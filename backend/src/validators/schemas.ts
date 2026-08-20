@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { isValidIbanChecksum } from "../lib/iban";
+import { isValidUnitCode } from "../lib/unitCodes";
 
 // Slovak VAT rates as of the 2026 reform (zákon o DPH §27): 23% standard, 19% and 5% reduced, 0% zero-rated.
 // NOTE: the original brief assumed the pre-2026 20%/10%/0% structure — that changed on 1.1.2026.
@@ -67,21 +68,25 @@ const dateSchema = z
   .regex(/^\d{4}-\d{2}-\d{2}$/, "Dátum musí byť vo formáte YYYY-MM-DD")
   .refine((v) => !Number.isNaN(new Date(v).getTime()), "Neplatný dátum");
 
-export const UNIT_CODES = ["C62", "HUR", "KGM", "MTR", "LTR", "DAY"] as const;
+// Tolerance absorbs float noise (e.g. 9.99 not being exactly representable) while still
+// rejecting genuine sub-cent input (e.g. 0.125), which would otherwise silently distort line
+// totals — see invoiceMath.ts. Shared by invoiceLineSchema and priceListItemSchema.
+const twoDecimalPriceSchema = z
+  .number()
+  .nonnegative()
+  .max(10_000_000)
+  .refine((v) => Math.abs(v * 100 - Math.round(v * 100)) < 1e-6, "Cena môže mať najviac 2 desatinné miesta");
+
+const vatRateSchema = z.union([z.literal(23), z.literal(19), z.literal(5), z.literal(0)]);
+
+const unitCodeSchema = z.string().refine(isValidUnitCode, "Neplatná merná jednotka (UN/ECE Rec 20)");
 
 export const invoiceLineSchema = z.object({
   description: z.string().trim().min(1).max(500),
   quantity: z.number().positive().max(1_000_000),
-  unitCode: z.enum(UNIT_CODES).default("C62"),
-  unitPrice: z
-    .number()
-    .nonnegative()
-    .max(10_000_000)
-    // Tolerance absorbs float noise (e.g. 9.99 not being exactly representable) while still
-    // rejecting genuine sub-cent input (e.g. 0.125), which would otherwise silently distort
-    // line totals — see invoiceMath.ts.
-    .refine((v) => Math.abs(v * 100 - Math.round(v * 100)) < 1e-6, "Jednotková cena môže mať najviac 2 desatinné miesta"),
-  taxRatePercent: z.union([z.literal(23), z.literal(19), z.literal(5), z.literal(0)]),
+  unitCode: unitCodeSchema.default("C62"),
+  unitPrice: twoDecimalPriceSchema,
+  taxRatePercent: vatRateSchema,
 });
 
 // MVP scope: domestic SK-to-SK Peppol invoicing only (matches the brief and the current
@@ -165,3 +170,26 @@ export const partnerListQuerySchema = z.object({
 
 export type PartnerInput = z.infer<typeof partnerSchema>;
 export type PartnerUpdateInput = z.infer<typeof partnerUpdateSchema>;
+
+export const priceListItemSchema = z.object({
+  name: nameSchema,
+  description: optionalTrimmedString(1000, "Popis môže mať najviac 1000 znakov"),
+  unitCode: unitCodeSchema,
+  unitPrice: twoDecimalPriceSchema,
+  vatRate: vatRateSchema,
+  sku: optionalTrimmedString(64, "SKU môže mať najviac 64 znakov"),
+});
+
+export const priceListItemUpdateSchema = priceListItemSchema.extend({
+  isActive: z.boolean(),
+});
+
+export const priceListItemListQuerySchema = z.object({
+  q: z.string().trim().max(256).optional(),
+  page: z.coerce.number().int().positive().default(1),
+  pageSize: z.coerce.number().int().positive().max(100).default(20),
+  includeInactive: z.preprocess((v) => v === "true" || v === "1", z.boolean()).default(false),
+});
+
+export type PriceListItemInput = z.infer<typeof priceListItemSchema>;
+export type PriceListItemUpdateInput = z.infer<typeof priceListItemUpdateSchema>;

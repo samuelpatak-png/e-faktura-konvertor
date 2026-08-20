@@ -36,6 +36,9 @@ export function AppShell() {
               <NavLink to="/app/partners" className={NAV_LINK_CLASS}>
                 Odberatelia
               </NavLink>
+              <NavLink to="/app/price-list" className={NAV_LINK_CLASS}>
+                Cenník
+              </NavLink>
               <NavLink to="/app/settings" className={NAV_LINK_CLASS}>
                 Nastavenia
               </NavLink>
@@ -60,6 +63,9 @@ export function AppShell() {
           </NavLink>
           <NavLink to="/app/partners" className={NAV_LINK_CLASS}>
             Odberatelia
+          </NavLink>
+          <NavLink to="/app/price-list" className={NAV_LINK_CLASS}>
+            Cenník
           </NavLink>
           <NavLink to="/app/settings" className={NAV_LINK_CLASS}>
             Nastavenia
