@@ -63,6 +63,16 @@ export interface CompanyProfile {
 
 export type CompanyProfileInput = Omit<CompanyProfile, "id">;
 
+export type BrandingAsset = "logo" | "stamp" | "signature";
+
+export interface CompanyBrandingStatus {
+  logo: boolean;
+  stamp: boolean;
+  signature: boolean;
+}
+
+export type CompanyProfileWithBranding = CompanyProfileInput & CompanyBrandingStatus;
+
 export interface SapiSkStatus {
   configured: boolean;
   mode: "mock" | "live";

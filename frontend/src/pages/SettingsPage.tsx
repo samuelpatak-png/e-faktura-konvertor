@@ -1,14 +1,82 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useLocation } from "react-router-dom";
 import { companyApi, apiErrorMessage } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import type { CompanyProfileInput, SapiSkStatus } from "../lib/types";
+import type { BrandingAsset, CompanyBrandingStatus, CompanyProfileInput, SapiSkStatus } from "../lib/types";
 import { Card, CardBody, CardHeader } from "../components/ui/Card";
 import { Input } from "../components/ui/Input";
 import { Button } from "../components/ui/Button";
 import { Alert } from "../components/ui/Alert";
 import { Badge } from "../components/ui/Badge";
 import { FullPageSpinner } from "../components/ui/Spinner";
+
+const EMPTY_BRANDING: CompanyBrandingStatus = { logo: false, stamp: false, signature: false };
+
+const BRANDING_ROWS: { asset: BrandingAsset; label: string; hint: string }[] = [
+  { asset: "logo", label: "Logo", hint: "Zobrazí sa v hlavičke PDF faktúry." },
+  { asset: "stamp", label: "Pečiatka", hint: "Zobrazí sa v päte PDF faktúry." },
+  { asset: "signature", label: "Podpis", hint: "Zobrazí sa v päte PDF faktúry." },
+];
+
+function BrandingAssetRow({
+  asset,
+  label,
+  hint,
+  present,
+  version,
+  uploading,
+  onUpload,
+  onRemove,
+}: {
+  asset: BrandingAsset;
+  label: string;
+  hint: string;
+  present: boolean;
+  version: number;
+  uploading: boolean;
+  onUpload: (file: File) => void;
+  onRemove: () => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-line px-4 py-3">
+      <div className="flex items-center gap-4">
+        <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-md border border-dashed border-line bg-canvas">
+          {present ? (
+            <img src={`${companyApi.brandingAssetUrl(asset)}?v=${version}`} alt={label} className="h-full w-full object-contain" />
+          ) : (
+            <span className="text-xs text-ink-400">Žiadny</span>
+          )}
+        </div>
+        <div>
+          <p className="text-sm font-medium text-ink-900">{label}</p>
+          <p className="text-xs text-ink-500">{hint}</p>
+        </div>
+      </div>
+      <div className="flex gap-2">
+        <input
+          ref={inputRef}
+          type="file"
+          accept="image/png,image/jpeg"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) onUpload(file);
+            if (inputRef.current) inputRef.current.value = "";
+          }}
+        />
+        <Button type="button" variant="secondary" size="sm" loading={uploading} onClick={() => inputRef.current?.click()}>
+          Nahrať
+        </Button>
+        {present && (
+          <Button type="button" variant="ghost" size="sm" onClick={onRemove}>
+            Odstrániť
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
 
 const EMPTY_PROFILE: CompanyProfileInput = {
   name: "",
@@ -30,9 +98,15 @@ export function SettingsPage() {
 
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState<CompanyProfileInput>(EMPTY_PROFILE);
+  const [hasProfile, setHasProfile] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
   const [profileSaved, setProfileSaved] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
+
+  const [branding, setBranding] = useState<CompanyBrandingStatus>(EMPTY_BRANDING);
+  const [brandingVersion, setBrandingVersion] = useState(0);
+  const [brandingError, setBrandingError] = useState<string | null>(null);
+  const [uploadingAsset, setUploadingAsset] = useState<BrandingAsset | null>(null);
 
   const [sapiStatus, setSapiStatus] = useState<SapiSkStatus>({ configured: false, mode: "mock" });
   const [clientId, setClientId] = useState("");
@@ -44,7 +118,11 @@ export function SettingsPage() {
   useEffect(() => {
     Promise.all([companyApi.getProfile(), companyApi.getSapiStatus()])
       .then(([p, s]) => {
-        if (p) setProfile(p);
+        if (p) {
+          setProfile(p);
+          setHasProfile(true);
+          setBranding({ logo: p.logo, stamp: p.stamp, signature: p.signature });
+        }
         setSapiStatus(s);
       })
       .finally(() => setLoading(false));
@@ -58,12 +136,38 @@ export function SettingsPage() {
     try {
       const saved = await companyApi.saveProfile(profile);
       setProfile(saved);
+      setHasProfile(true);
       setProfileSaved(true);
       await refresh();
     } catch (err) {
       setProfileError(apiErrorMessage(err, "Nepodarilo sa uložiť údaje o firme"));
     } finally {
       setSavingProfile(false);
+    }
+  }
+
+  async function handleBrandingUpload(asset: BrandingAsset, file: File) {
+    setBrandingError(null);
+    setUploadingAsset(asset);
+    try {
+      const status = await companyApi.uploadBranding(asset, file);
+      setBranding(status);
+      setBrandingVersion((v) => v + 1);
+    } catch (err) {
+      setBrandingError(apiErrorMessage(err, "Nepodarilo sa nahrať súbor"));
+    } finally {
+      setUploadingAsset(null);
+    }
+  }
+
+  async function handleBrandingRemove(asset: BrandingAsset) {
+    setBrandingError(null);
+    try {
+      const status = await companyApi.removeBrandingAsset(asset);
+      setBranding(status);
+      setBrandingVersion((v) => v + 1);
+    } catch (err) {
+      setBrandingError(apiErrorMessage(err, "Nepodarilo sa odstrániť súbor"));
     }
   }
 
@@ -204,6 +308,33 @@ export function SettingsPage() {
               Uložiť údaje o firme
             </Button>
           </form>
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader
+          title="Vzhľad PDF faktúry"
+          description="Voliteľné logo, pečiatka a podpis, ktoré sa vložia do generovaného PDF."
+        />
+        <CardBody className="flex flex-col gap-3">
+          {brandingError && <Alert tone="danger">{brandingError}</Alert>}
+          {!hasProfile ? (
+            <Alert tone="info">Najprv ulož údaje o firme vyššie — až potom môžeš nahrať logo, pečiatku a podpis.</Alert>
+          ) : (
+            BRANDING_ROWS.map((row) => (
+              <BrandingAssetRow
+                key={row.asset}
+                asset={row.asset}
+                label={row.label}
+                hint={row.hint}
+                present={branding[row.asset]}
+                version={brandingVersion}
+                uploading={uploadingAsset === row.asset}
+                onUpload={(file) => handleBrandingUpload(row.asset, file)}
+                onRemove={() => handleBrandingRemove(row.asset)}
+              />
+            ))
+          )}
         </CardBody>
       </Card>
 

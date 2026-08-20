@@ -1,6 +1,9 @@
 import axios from "axios";
 import type {
+  BrandingAsset,
+  CompanyBrandingStatus,
   CompanyProfileInput,
+  CompanyProfileWithBranding,
   CompanyRegistryLookupResult,
   CreditNoteInput,
   ExtractedInvoiceData,
@@ -60,7 +63,7 @@ export const authApi = {
 };
 
 export const companyApi = {
-  getProfile: () => api.get<CompanyProfileInput | null>("/company/profile").then((r) => r.data),
+  getProfile: () => api.get<CompanyProfileWithBranding | null>("/company/profile").then((r) => r.data),
   saveProfile: (data: CompanyProfileInput) => api.put<CompanyProfileInput>("/company/profile", data).then((r) => r.data),
   getSapiStatus: () => api.get<SapiSkStatus>("/company/sapi-credentials").then((r) => r.data),
   saveSapiCredentials: (clientId: string, clientSecret: string) =>
@@ -68,6 +71,14 @@ export const companyApi = {
   setSapiMode: (mode: "mock" | "live") =>
     api.patch<SapiSkStatus>("/company/sapi-credentials/mode", { mode }).then((r) => r.data),
   deleteSapiCredentials: () => api.delete("/company/sapi-credentials"),
+  brandingAssetUrl: (asset: BrandingAsset) => `/api/company/branding/${asset}`,
+  uploadBranding: (asset: BrandingAsset, file: File) => {
+    const formData = new FormData();
+    formData.append(asset, file);
+    return api.put<CompanyBrandingStatus>("/company/branding", formData).then((r) => r.data);
+  },
+  removeBrandingAsset: (asset: BrandingAsset) =>
+    api.delete<CompanyBrandingStatus>(`/company/branding/${asset}`).then((r) => r.data),
 };
 
 export const invoiceApi = {
@@ -76,6 +87,7 @@ export const invoiceApi = {
   list: () => api.get<InvoiceListItem[]>("/invoice").then((r) => r.data),
   get: (id: string) => api.get<InvoiceDetail>(`/invoice/${id}`).then((r) => r.data),
   downloadUrl: (id: string) => `/api/invoice/${id}/download`,
+  pdfUrl: (id: string) => `/api/invoice/${id}/pdf`,
   sendSapi: (id: string) => api.post<SapiSendResult>(`/invoice/${id}/send-sapi`).then((r) => r.data),
   recordPayment: (id: string, amountCents: number) => api.post<InvoiceDetail>(`/invoice/${id}/payments`, { amountCents }).then((r) => r.data),
   cancel: (id: string) => api.post<InvoiceDetail>(`/invoice/${id}/cancel`).then((r) => r.data),

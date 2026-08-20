@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { centsToEur, computeInvoiceTotals, eurToCents } from "./invoiceMath";
+import { centsToEur, computeInvoiceTotals, eurToCents, taxBreakdownFromLines } from "./invoiceMath";
 
 type LineInput = Parameters<typeof computeInvoiceTotals>[0]["lines"][number];
 
@@ -81,4 +81,22 @@ describe("computeInvoiceTotals", () => {
   // .nonnegative()) before reaching this function — see schemas.test.ts for that case.
   // computeInvoiceTotals itself does not defensively re-check, matching the rest of the
   // codebase's "validate at the boundary, trust internally" pattern.
+});
+
+describe("taxBreakdownFromLines", () => {
+  it("regroups persisted (already-in-cents) lines the same way computeInvoiceTotals groups fresh input", () => {
+    const breakdown = taxBreakdownFromLines([
+      { taxRatePercent: 23, lineNetCents: 10000 },
+      { taxRatePercent: 19, lineNetCents: 5000 },
+      { taxRatePercent: 23, lineNetCents: 2000 },
+    ]);
+    expect(breakdown).toEqual([
+      { taxRatePercent: 23, taxableAmountCents: 12000, taxAmountCents: 2760 },
+      { taxRatePercent: 19, taxableAmountCents: 5000, taxAmountCents: 950 },
+    ]);
+  });
+
+  it("returns an empty array for no lines", () => {
+    expect(taxBreakdownFromLines([])).toEqual([]);
+  });
 });

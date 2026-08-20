@@ -11,6 +11,7 @@ function mockRes() {
   const res = {
     statusCode: 200,
     body: undefined as unknown,
+    headers: {} as Record<string, string>,
     status(code: number) {
       res.statusCode = code;
       return res;
@@ -23,8 +24,12 @@ function mockRes() {
       res.body = data;
       return res;
     },
+    setHeader(name: string, value: string) {
+      res.headers[name] = value;
+      return res;
+    },
   };
-  return res as unknown as Response & { statusCode: number; body: unknown };
+  return res as unknown as Response & { statusCode: number; body: unknown; headers: Record<string, string> };
 }
 
 async function createUser(email: string) {
@@ -33,7 +38,7 @@ async function createUser(email: string) {
 
 async function createInvoice(
   userId: string,
-  overrides: Partial<{ number: string; dueDate: string; grossAmountCents: number; documentType: "INVOICE" | "CREDIT_NOTE" | "ADVANCE_TAX_DOCUMENT"; originalInvoiceId: string; supplierIcDph: string | null }> = {}
+  overrides: Partial<{ number: string; dueDate: string; grossAmountCents: number; documentType: "INVOICE" | "CREDIT_NOTE" | "ADVANCE_TAX_DOCUMENT"; originalInvoiceId: string; supplierIcDph: string | null; xml: string | null; prepaidAmountCents: number }> = {}
 ) {
   return prisma.invoice.create({
     data: {
@@ -50,6 +55,8 @@ async function createInvoice(
       supplierIcDph: overrides.supplierIcDph !== undefined ? overrides.supplierIcDph : "SK1111111111",
       documentType: overrides.documentType ?? "INVOICE",
       originalInvoiceId: overrides.originalInvoiceId,
+      prepaidAmountCents: overrides.prepaidAmountCents,
+      xml: overrides.xml !== undefined ? overrides.xml : "<Invoice><cbc:ID>2026-0001</cbc:ID></Invoice>",
       supplierStreet: "Ulica 1",
       supplierCity: "Bratislava",
       supplierPostalCode: "81101",
@@ -473,6 +480,63 @@ describe("invoiceController payments", () => {
         res
       );
       expect(res.statusCode).toBe(404);
+    });
+  });
+
+  describe("downloadInvoicePdf", () => {
+    it("streams a valid PDF for a generated invoice, even with no CompanyProfile branding on file", async () => {
+      const invoice = await createInvoice(userA.id);
+      const res = mockRes();
+      await invoiceController.downloadInvoicePdf(mockReq(userA.id, { params: { id: invoice.id } }), res);
+      expect(res.statusCode).toBe(200);
+      const body = res.body as Buffer;
+      expect(Buffer.isBuffer(body)).toBe(true);
+      expect(body.subarray(0, 4).toString()).toBe("%PDF");
+    });
+
+    it("returns 404 for a non-existent invoice", async () => {
+      const res = mockRes();
+      await invoiceController.downloadInvoicePdf(mockReq(userA.id, { params: { id: "does-not-exist" } }), res);
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("returns 404 when the invoice has no generated xml yet", async () => {
+      const invoice = await createInvoice(userA.id, { xml: null });
+      const res = mockRes();
+      await invoiceController.downloadInvoicePdf(mockReq(userA.id, { params: { id: invoice.id } }), res);
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("user A cannot download user B's invoice as a PDF", async () => {
+      const invoice = await createInvoice(userB.id);
+      const res = mockRes();
+      await invoiceController.downloadInvoicePdf(mockReq(userA.id, { params: { id: invoice.id } }), res);
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("produces a valid PDF for a credit note despite the DB's non-meaningful dueDate placeholder", async () => {
+      const invoice = await createInvoice(userA.id, { documentType: "CREDIT_NOTE" });
+      const res = mockRes();
+      await invoiceController.downloadInvoicePdf(mockReq(userA.id, { params: { id: invoice.id } }), res);
+      expect(res.statusCode).toBe(200);
+      expect((res.body as Buffer).subarray(0, 4).toString()).toBe("%PDF");
+    });
+
+    it("embeds current CompanyProfile branding rather than a snapshot, without throwing", async () => {
+      await createCompanyProfile(userA.id);
+      const tinyPng = Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+        "base64"
+      );
+      await prisma.companyProfile.update({
+        where: { userId: userA.id },
+        data: { logoData: tinyPng.toString("base64"), logoMimeType: "image/png" },
+      });
+      const invoice = await createInvoice(userA.id);
+      const res = mockRes();
+      await invoiceController.downloadInvoicePdf(mockReq(userA.id, { params: { id: invoice.id } }), res);
+      expect(res.statusCode).toBe(200);
+      expect((res.body as Buffer).subarray(0, 4).toString()).toBe("%PDF");
     });
   });
 });
