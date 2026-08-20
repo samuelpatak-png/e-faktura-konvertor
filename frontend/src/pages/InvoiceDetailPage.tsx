@@ -2,11 +2,20 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { invoiceApi, apiErrorMessage } from "../lib/api";
 import type { InvoiceDetail } from "../lib/types";
-import { centsToEur, formatDate, formatEur, invoiceStatusTone, INVOICE_STATUS_LABELS } from "../lib/format";
+import {
+  centsToEur,
+  formatDate,
+  formatEur,
+  invoiceStatusTone,
+  INVOICE_STATUS_LABELS,
+  paymentStatusTone,
+  PAYMENT_STATUS_LABELS,
+} from "../lib/format";
 import { Card, CardBody, CardHeader } from "../components/ui/Card";
 import { Badge } from "../components/ui/Badge";
 import { Alert } from "../components/ui/Alert";
 import { Button } from "../components/ui/Button";
+import { Input } from "../components/ui/Input";
 import { FullPageSpinner } from "../components/ui/Spinner";
 import { XmlPreview } from "../components/invoice/XmlPreview";
 
@@ -16,6 +25,10 @@ export function InvoiceDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [sendState, setSendState] = useState<"idle" | "sending" | "sent" | "failed">("idle");
   const [sendMessage, setSendMessage] = useState<string | null>(null);
+
+  const [paymentAmount, setPaymentAmount] = useState("");
+  const [paymentBusy, setPaymentBusy] = useState(false);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -47,8 +60,45 @@ export function InvoiceDetailPage() {
     }
   }
 
+  async function handleRecordPayment() {
+    if (!id) return;
+    const amountEur = Number(paymentAmount);
+    if (!Number.isFinite(amountEur) || amountEur <= 0) {
+      setPaymentError("Zadaj kladnú sumu úhrady.");
+      return;
+    }
+    setPaymentBusy(true);
+    setPaymentError(null);
+    try {
+      const updated = await invoiceApi.recordPayment(id, Math.round(amountEur * 100));
+      setInvoice(updated);
+      setPaymentAmount("");
+    } catch (err) {
+      setPaymentError(apiErrorMessage(err, "Zaznamenanie úhrady zlyhalo"));
+    } finally {
+      setPaymentBusy(false);
+    }
+  }
+
+  async function handleCancel() {
+    if (!id) return;
+    setPaymentBusy(true);
+    setPaymentError(null);
+    try {
+      const updated = await invoiceApi.cancel(id);
+      setInvoice(updated);
+    } catch (err) {
+      setPaymentError(apiErrorMessage(err, "Stornovanie zlyhalo"));
+    } finally {
+      setPaymentBusy(false);
+    }
+  }
+
   if (error) return <Alert tone="danger">{error}</Alert>;
   if (!invoice) return <FullPageSpinner />;
+
+  const remainingCents = invoice.grossAmountCents - invoice.paidAmountCents;
+  const canRecordPayment = invoice.paymentStatus === "UNPAID" || invoice.paymentStatus === "PARTIALLY_PAID";
 
   return (
     <div className="flex flex-col gap-6">
@@ -59,9 +109,13 @@ export function InvoiceDetailPage() {
             <Badge tone={invoiceStatusTone(invoice.status)}>
               {INVOICE_STATUS_LABELS[invoice.status] ?? invoice.status}
             </Badge>
+            <Badge tone={paymentStatusTone(invoice.paymentStatus)}>
+              {PAYMENT_STATUS_LABELS[invoice.paymentStatus] ?? invoice.paymentStatus}
+            </Badge>
           </div>
           <p className="mt-1 text-sm text-ink-500">
             Vystavená {formatDate(invoice.issueDate)} · Splatná {formatDate(invoice.dueDate)}
+            {invoice.overdue && <span className="ml-1 font-medium text-danger-600">· {invoice.daysOverdue} dní po splatnosti</span>}
           </p>
         </div>
         <div className="flex gap-2">
@@ -75,6 +129,38 @@ export function InvoiceDetailPage() {
       </div>
 
       {sendMessage && <Alert tone={sendState === "sent" ? "success" : "danger"}>{sendMessage}</Alert>}
+
+      <Card>
+        <CardHeader
+          title="Úhrada"
+          description={`Uhradené ${formatEur(centsToEur(invoice.paidAmountCents))} z ${formatEur(centsToEur(invoice.grossAmountCents))}${
+            invoice.paidAt ? ` · uhradené ${formatDate(invoice.paidAt)}` : ""
+          }`}
+        />
+        <CardBody className="flex flex-col gap-4">
+          {paymentError && <Alert tone="danger">{paymentError}</Alert>}
+          {canRecordPayment && (
+            <div className="flex flex-wrap items-end gap-3">
+              <Input
+                label="Zaznamenať úhradu (€)"
+                type="number"
+                min={0.01}
+                step="0.01"
+                value={paymentAmount}
+                onChange={(e) => setPaymentAmount(e.target.value)}
+                hint={`Zostáva uhradiť ${formatEur(centsToEur(remainingCents))}`}
+                className="max-w-[220px]"
+              />
+              <Button variant="secondary" loading={paymentBusy} onClick={handleRecordPayment}>
+                Zaznamenať úhradu
+              </Button>
+              <Button variant="ghost" loading={paymentBusy} onClick={handleCancel} className="ml-auto text-danger-600">
+                Stornovať faktúru
+              </Button>
+            </div>
+          )}
+        </CardBody>
+      </Card>
 
       <Card>
         <CardHeader title="Odberateľ" />

@@ -193,3 +193,7 @@ export const priceListItemListQuerySchema = z.object({
 
 export type PriceListItemInput = z.infer<typeof priceListItemSchema>;
 export type PriceListItemUpdateInput = z.infer<typeof priceListItemUpdateSchema>;
+
+export const recordPaymentSchema = z.object({
+  amountCents: z.number().int().positive("Suma úhrady musí byť kladná"),
+});

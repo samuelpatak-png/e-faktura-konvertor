@@ -1,12 +1,13 @@
 import type { Request, Response } from "express";
 import { prisma } from "../lib/prisma";
-import type { CompanyProfile } from "@prisma/client";
-import { invoiceInputSchema, type InvoiceInput } from "../validators/schemas";
+import type { CompanyProfile, Invoice } from "@prisma/client";
+import { invoiceInputSchema, recordPaymentSchema, type InvoiceInput } from "../validators/schemas";
 import { computeInvoiceTotals, centsToEur, type ComputedInvoiceTotals } from "../services/invoiceMath";
 import { validateComputedInvoice, type ValidationResult } from "../services/invoiceValidator";
 import { generateInvoiceXml } from "../services/xmlGenerator";
 import { decryptSecret } from "../lib/crypto";
 import { sendInvoiceViaSapiSk } from "../services/sapiSkClient";
+import { computePaymentStatus, isOverdue, daysOverdue, agingBucket } from "../services/paymentStatus";
 
 async function loadSupplier(userId: string) {
   return prisma.companyProfile.findUnique({ where: { userId } });
@@ -52,6 +53,13 @@ function validate(data: InvoiceInput, supplier: CompanyProfile, totals: Computed
     grossAmountCents: totals.grossAmountCents,
     taxBreakdown: totals.taxBreakdown,
   });
+}
+
+function paymentFields(invoice: Pick<Invoice, "dueDate" | "paymentStatus">) {
+  return {
+    overdue: isOverdue(invoice.dueDate, invoice.paymentStatus),
+    daysOverdue: daysOverdue(invoice.dueDate),
+  };
 }
 
 function summaryFromTotals(totals: ComputedInvoiceTotals) {
@@ -177,9 +185,14 @@ export async function listInvoices(req: Request, res: Response) {
       currency: true,
       sentAt: true,
       createdAt: true,
+      paymentStatus: true,
+      paidAmountCents: true,
+      paidAt: true,
     },
   });
-  res.json(invoices.map((inv) => ({ ...inv, grossAmount: centsToEur(inv.grossAmountCents) })));
+  res.json(
+    invoices.map((inv) => ({ ...inv, grossAmount: centsToEur(inv.grossAmountCents), ...paymentFields(inv) }))
+  );
 }
 
 export async function getInvoice(req: Request, res: Response) {
@@ -188,7 +201,7 @@ export async function getInvoice(req: Request, res: Response) {
     include: { lines: { orderBy: { sortOrder: "asc" } } },
   });
   if (!invoice) return res.status(404).json({ error: "Faktúra nenájdená" });
-  res.json(invoice);
+  res.json({ ...invoice, ...paymentFields(invoice) });
 }
 
 export async function downloadInvoice(req: Request, res: Response) {
@@ -230,4 +243,85 @@ export async function sendInvoiceViaSapi(req: Request, res: Response) {
   });
 
   res.json(result);
+}
+
+export async function recordPayment(req: Request, res: Response) {
+  const parsed = recordPaymentSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Neplatné údaje", details: parsed.error.flatten().fieldErrors });
+  }
+
+  const invoice = await prisma.invoice.findFirst({ where: { id: req.params.id, userId: req.userId! } });
+  if (!invoice) return res.status(404).json({ error: "Faktúra nenájdená" });
+
+  if (invoice.paymentStatus === "CANCELLED") {
+    return res.status(400).json({ error: "Faktúra je stornovaná, nemožno na ňu zaznamenať úhradu" });
+  }
+
+  const newPaidAmountCents = invoice.paidAmountCents + parsed.data.amountCents;
+  if (newPaidAmountCents > invoice.grossAmountCents) {
+    // Overpayment is rejected outright rather than accepted as a credit balance — see WP3
+    // handoff for the reasoning (a real credit-balance ledger is out of scope here).
+    const remaining = centsToEur(invoice.grossAmountCents - invoice.paidAmountCents);
+    return res.status(400).json({ error: `Úhrada by presiahla sumu faktúry (zostáva uhradiť ${remaining.toFixed(2)} €)` });
+  }
+
+  const paymentStatus = computePaymentStatus(newPaidAmountCents, invoice.grossAmountCents);
+  const updated = await prisma.invoice.update({
+    where: { id: invoice.id },
+    data: {
+      paidAmountCents: newPaidAmountCents,
+      paymentStatus,
+      paidAt: paymentStatus === "PAID" ? new Date() : invoice.paidAt,
+    },
+    // The frontend re-renders the full invoice detail (including line items) from this
+    // response — omitting `lines` here previously crashed that page after recording a payment.
+    include: { lines: { orderBy: { sortOrder: "asc" } } },
+  });
+
+  res.json({ ...updated, ...paymentFields(updated) });
+}
+
+export async function cancelInvoice(req: Request, res: Response) {
+  const invoice = await prisma.invoice.findFirst({ where: { id: req.params.id, userId: req.userId! } });
+  if (!invoice) return res.status(404).json({ error: "Faktúra nenájdená" });
+
+  if (invoice.paymentStatus === "PAID") {
+    return res.status(400).json({ error: "Uhradenú faktúru nemožno takto stornovať — vystav dobropis." });
+  }
+  if (invoice.paymentStatus === "CANCELLED") {
+    return res.status(400).json({ error: "Faktúra je už stornovaná" });
+  }
+
+  const updated = await prisma.invoice.update({
+    where: { id: invoice.id },
+    data: { paymentStatus: "CANCELLED" },
+    include: { lines: { orderBy: { sortOrder: "asc" } } },
+  });
+  res.json({ ...updated, ...paymentFields(updated) });
+}
+
+export async function getUnpaidSummary(req: Request, res: Response) {
+  const invoices = await prisma.invoice.findMany({
+    where: { userId: req.userId!, paymentStatus: { in: ["UNPAID", "PARTIALLY_PAID"] } },
+    select: { id: true, number: true, customerName: true, dueDate: true, grossAmountCents: true, paidAmountCents: true },
+  });
+
+  const buckets = {
+    notYetDue: { count: 0, amountCents: 0 },
+    days0to30: { count: 0, amountCents: 0 },
+    days31to60: { count: 0, amountCents: 0 },
+    days60plus: { count: 0, amountCents: 0 },
+  };
+  let totalOutstandingCents = 0;
+
+  for (const inv of invoices) {
+    const outstandingCents = inv.grossAmountCents - inv.paidAmountCents;
+    totalOutstandingCents += outstandingCents;
+    const bucket = buckets[agingBucket(daysOverdue(inv.dueDate))];
+    bucket.count += 1;
+    bucket.amountCents += outstandingCents;
+  }
+
+  res.json({ totalOutstandingCents, count: invoices.length, buckets });
 }
