@@ -2,6 +2,7 @@ import axios from "axios";
 import type {
   CompanyProfileInput,
   CompanyRegistryLookupResult,
+  CreditNoteInput,
   ExtractedInvoiceData,
   GenerateResult,
   InvoiceDetail,
@@ -78,6 +79,7 @@ export const invoiceApi = {
   recordPayment: (id: string, amountCents: number) => api.post<InvoiceDetail>(`/invoice/${id}/payments`, { amountCents }).then((r) => r.data),
   cancel: (id: string) => api.post<InvoiceDetail>(`/invoice/${id}/cancel`).then((r) => r.data),
   unpaidSummary: () => api.get<UnpaidSummary>("/invoice/unpaid-summary").then((r) => r.data),
+  createCreditNote: (id: string, data: CreditNoteInput) => api.post<GenerateResult>(`/invoice/${id}/credit-note`, data).then((r) => r.data),
 };
 
 export const partnerApi = {

@@ -114,6 +114,11 @@ export const invoiceInputSchema = z
       .array(invoiceLineSchema)
       .min(1, "Faktúra musí mať aspoň jednu položku")
       .max(200, "Faktúra môže mať najviac 200 položiek"),
+    // WP4: only meaningful for a VAT-registered supplier — see WP4 handoff ("daňový doklad k
+    // prijatej platbe" is legally required only for platcovia DPH). Ignored otherwise.
+    isAdvanceTaxDocument: z.boolean().optional(),
+    prepaidAmountCents: z.number().int().nonnegative().optional(),
+    prepaidReference: z.string().trim().max(256).optional(),
   })
   .refine((data) => new Date(data.dueDate).getTime() >= new Date(data.issueDate).getTime(), {
     message: "Dátum splatnosti nemôže byť pred dátumom vystavenia",
@@ -196,4 +201,14 @@ export type PriceListItemUpdateInput = z.infer<typeof priceListItemUpdateSchema>
 
 export const recordPaymentSchema = z.object({
   amountCents: z.number().int().positive("Suma úhrady musí byť kladná"),
+});
+
+// Lines optional — omitted means "credit the original invoice in full" (its own lines are
+// copied server-side). buyerReference optional — defaults to the original invoice's value.
+export const creditNoteInputSchema = z.object({
+  number: z.string().trim().min(1).max(64),
+  issueDate: dateSchema,
+  buyerReference: z.string().trim().min(1).max(128).optional(),
+  reason: z.string().trim().max(500).optional(),
+  lines: z.array(invoiceLineSchema).min(1, "Dobropis musí mať aspoň jednu položku").max(200).optional(),
 });

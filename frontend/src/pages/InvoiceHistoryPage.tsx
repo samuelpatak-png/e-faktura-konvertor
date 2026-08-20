@@ -2,7 +2,15 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { invoiceApi, apiErrorMessage } from "../lib/api";
 import type { InvoiceListItem, PaymentStatus } from "../lib/types";
-import { formatDate, formatEur, invoiceStatusTone, INVOICE_STATUS_LABELS, paymentStatusTone, PAYMENT_STATUS_LABELS } from "../lib/format";
+import {
+  formatDate,
+  formatEur,
+  invoiceStatusTone,
+  INVOICE_STATUS_LABELS,
+  paymentStatusTone,
+  PAYMENT_STATUS_LABELS,
+  DOCUMENT_TYPE_LABELS,
+} from "../lib/format";
 import { Card } from "../components/ui/Card";
 import { Badge } from "../components/ui/Badge";
 import { Alert } from "../components/ui/Alert";
@@ -73,6 +81,7 @@ export function InvoiceHistoryPage() {
             <thead>
               <tr className="border-b border-line bg-canvas text-left text-xs font-medium uppercase tracking-wide text-ink-500">
                 <th className="px-4 py-3">Číslo</th>
+                <th className="px-4 py-3">Typ</th>
                 <th className="px-4 py-3">Odberateľ</th>
                 <th className="px-4 py-3">Vystavená</th>
                 <th className="px-4 py-3">Splatnosť</th>
@@ -90,18 +99,31 @@ export function InvoiceHistoryPage() {
                       {inv.number}
                     </Link>
                   </td>
+                  <td className="px-4 py-3">
+                    <Badge tone={inv.documentType === "CREDIT_NOTE" ? "warning" : "neutral"}>
+                      {DOCUMENT_TYPE_LABELS[inv.documentType] ?? inv.documentType}
+                    </Badge>
+                  </td>
                   <td className="px-4 py-3 text-ink-700">{inv.customerName}</td>
                   <td className="px-4 py-3 text-ink-700">{formatDate(inv.issueDate)}</td>
                   <td className="px-4 py-3 text-ink-700">{formatDate(inv.dueDate)}</td>
                   <td className="px-4 py-3">
-                    {inv.overdue ? <span className="font-medium text-danger-600">{inv.daysOverdue} dní</span> : <span className="text-ink-500">—</span>}
+                    {inv.documentType === "INVOICE" && inv.overdue ? (
+                      <span className="font-medium text-danger-600">{inv.daysOverdue} dní</span>
+                    ) : (
+                      <span className="text-ink-500">—</span>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-900">{formatEur(inv.grossAmount)}</td>
                   <td className="px-4 py-3">
                     <Badge tone={invoiceStatusTone(inv.status)}>{INVOICE_STATUS_LABELS[inv.status] ?? inv.status}</Badge>
                   </td>
                   <td className="px-4 py-3">
-                    <Badge tone={paymentStatusTone(inv.paymentStatus)}>{PAYMENT_STATUS_LABELS[inv.paymentStatus] ?? inv.paymentStatus}</Badge>
+                    {inv.documentType === "INVOICE" ? (
+                      <Badge tone={paymentStatusTone(inv.paymentStatus)}>{PAYMENT_STATUS_LABELS[inv.paymentStatus] ?? inv.paymentStatus}</Badge>
+                    ) : (
+                      <span className="text-ink-500">—</span>
+                    )}
                   </td>
                 </tr>
               ))}

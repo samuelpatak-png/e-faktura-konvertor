@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { invoiceApi, apiErrorMessage } from "../lib/api";
 import type { InvoiceDetail } from "../lib/types";
 import {
@@ -10,6 +10,7 @@ import {
   INVOICE_STATUS_LABELS,
   paymentStatusTone,
   PAYMENT_STATUS_LABELS,
+  DOCUMENT_TYPE_LABELS,
 } from "../lib/format";
 import { Card, CardBody, CardHeader } from "../components/ui/Card";
 import { Badge } from "../components/ui/Badge";
@@ -21,6 +22,7 @@ import { XmlPreview } from "../components/invoice/XmlPreview";
 
 export function InvoiceDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [invoice, setInvoice] = useState<InvoiceDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sendState, setSendState] = useState<"idle" | "sending" | "sent" | "failed">("idle");
@@ -29,6 +31,12 @@ export function InvoiceDetailPage() {
   const [paymentAmount, setPaymentAmount] = useState("");
   const [paymentBusy, setPaymentBusy] = useState(false);
   const [paymentError, setPaymentError] = useState<string | null>(null);
+
+  const [showCreditNoteForm, setShowCreditNoteForm] = useState(false);
+  const [creditNoteNumber, setCreditNoteNumber] = useState("");
+  const [creditNoteReason, setCreditNoteReason] = useState("");
+  const [creditNoteBusy, setCreditNoteBusy] = useState(false);
+  const [creditNoteError, setCreditNoteError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -94,24 +102,55 @@ export function InvoiceDetailPage() {
     }
   }
 
+  async function handleCreateCreditNote() {
+    if (!id || !creditNoteNumber.trim()) {
+      setCreditNoteError("Zadaj číslo dobropisu.");
+      return;
+    }
+    setCreditNoteBusy(true);
+    setCreditNoteError(null);
+    try {
+      const result = await invoiceApi.createCreditNote(id, {
+        number: creditNoteNumber.trim(),
+        issueDate: new Date().toISOString().slice(0, 10),
+        reason: creditNoteReason.trim() || undefined,
+      });
+      if (result.success && result.invoiceId) {
+        navigate(`/app/invoices/${result.invoiceId}`);
+      } else {
+        setCreditNoteError(result.errors?.join(" ") ?? "Vytvorenie dobropisu zlyhalo");
+      }
+    } catch (err) {
+      setCreditNoteError(apiErrorMessage(err, "Vytvorenie dobropisu zlyhalo"));
+    } finally {
+      setCreditNoteBusy(false);
+    }
+  }
+
   if (error) return <Alert tone="danger">{error}</Alert>;
   if (!invoice) return <FullPageSpinner />;
 
   const remainingCents = invoice.grossAmountCents - invoice.paidAmountCents;
   const canRecordPayment = invoice.paymentStatus === "UNPAID" || invoice.paymentStatus === "PARTIALLY_PAID";
+  const creditedCents = invoice.corrections.reduce((sum, c) => sum + c.grossAmountCents, 0);
+  const fullyCredited = creditedCents >= invoice.grossAmountCents;
 
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-semibold text-ink-900">Faktúra {invoice.number}</h1>
+            <h1 className="text-2xl font-semibold text-ink-900">
+              {DOCUMENT_TYPE_LABELS[invoice.documentType] ?? "Faktúra"} {invoice.number}
+            </h1>
             <Badge tone={invoiceStatusTone(invoice.status)}>
               {INVOICE_STATUS_LABELS[invoice.status] ?? invoice.status}
             </Badge>
-            <Badge tone={paymentStatusTone(invoice.paymentStatus)}>
-              {PAYMENT_STATUS_LABELS[invoice.paymentStatus] ?? invoice.paymentStatus}
-            </Badge>
+            {invoice.documentType === "INVOICE" && (
+              <Badge tone={paymentStatusTone(invoice.paymentStatus)}>
+                {PAYMENT_STATUS_LABELS[invoice.paymentStatus] ?? invoice.paymentStatus}
+              </Badge>
+            )}
           </div>
           <p className="mt-1 text-sm text-ink-500">
             Vystavená {formatDate(invoice.issueDate)} · Splatná {formatDate(invoice.dueDate)}
@@ -130,37 +169,93 @@ export function InvoiceDetailPage() {
 
       {sendMessage && <Alert tone={sendState === "sent" ? "success" : "danger"}>{sendMessage}</Alert>}
 
-      <Card>
-        <CardHeader
-          title="Úhrada"
-          description={`Uhradené ${formatEur(centsToEur(invoice.paidAmountCents))} z ${formatEur(centsToEur(invoice.grossAmountCents))}${
-            invoice.paidAt ? ` · uhradené ${formatDate(invoice.paidAt)}` : ""
-          }`}
-        />
-        <CardBody className="flex flex-col gap-4">
-          {paymentError && <Alert tone="danger">{paymentError}</Alert>}
-          {canRecordPayment && (
-            <div className="flex flex-wrap items-end gap-3">
-              <Input
-                label="Zaznamenať úhradu (€)"
-                type="number"
-                min={0.01}
-                step="0.01"
-                value={paymentAmount}
-                onChange={(e) => setPaymentAmount(e.target.value)}
-                hint={`Zostáva uhradiť ${formatEur(centsToEur(remainingCents))}`}
-                className="max-w-[220px]"
-              />
-              <Button variant="secondary" loading={paymentBusy} onClick={handleRecordPayment}>
-                Zaznamenať úhradu
-              </Button>
-              <Button variant="ghost" loading={paymentBusy} onClick={handleCancel} className="ml-auto text-danger-600">
-                Stornovať faktúru
-              </Button>
-            </div>
-          )}
-        </CardBody>
-      </Card>
+      {invoice.documentType === "INVOICE" && (
+        <Card>
+          <CardHeader
+            title="Úhrada"
+            description={`Uhradené ${formatEur(centsToEur(invoice.paidAmountCents))} z ${formatEur(centsToEur(invoice.grossAmountCents))}${
+              invoice.paidAt ? ` · uhradené ${formatDate(invoice.paidAt)}` : ""
+            }`}
+          />
+          <CardBody className="flex flex-col gap-4">
+            {paymentError && <Alert tone="danger">{paymentError}</Alert>}
+            {canRecordPayment && (
+              <div className="flex flex-wrap items-end gap-3">
+                <Input
+                  label="Zaznamenať úhradu (€)"
+                  type="number"
+                  min={0.01}
+                  step="0.01"
+                  value={paymentAmount}
+                  onChange={(e) => setPaymentAmount(e.target.value)}
+                  hint={`Zostáva uhradiť ${formatEur(centsToEur(remainingCents))}`}
+                  className="max-w-[220px]"
+                />
+                <Button variant="secondary" loading={paymentBusy} onClick={handleRecordPayment}>
+                  Zaznamenať úhradu
+                </Button>
+                <Button variant="ghost" loading={paymentBusy} onClick={handleCancel} className="ml-auto text-danger-600">
+                  Stornovať faktúru
+                </Button>
+              </div>
+            )}
+          </CardBody>
+        </Card>
+      )}
+
+      {invoice.documentType === "CREDIT_NOTE" && invoice.original && (
+        <Alert tone="info">
+          Dobropis k faktúre{" "}
+          <Link to={`/app/invoices/${invoice.original.id}`} className="font-medium underline">
+            {invoice.original.number}
+          </Link>
+        </Alert>
+      )}
+
+      {invoice.documentType === "INVOICE" && (
+        <Card>
+          <CardHeader title="Dobropisy" description="Opravy alebo storná tejto faktúry." />
+          <CardBody className="flex flex-col gap-4">
+            {invoice.corrections.length > 0 && (
+              <ul className="flex flex-col gap-1 text-sm">
+                {invoice.corrections.map((c) => (
+                  <li key={c.id}>
+                    <Link to={`/app/invoices/${c.id}`} className="font-medium text-brand-600 hover:text-brand-700">
+                      {c.number}
+                    </Link>{" "}
+                    · {formatDate(c.issueDate)} · {formatEur(centsToEur(c.grossAmountCents))}
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {creditNoteError && <Alert tone="danger">{creditNoteError}</Alert>}
+
+            {invoice.paymentStatus !== "CANCELLED" && fullyCredited && (
+              <p className="text-sm text-ink-500">Faktúra je už dobropisovaná v plnej výške.</p>
+            )}
+
+            {invoice.paymentStatus !== "CANCELLED" &&
+              !fullyCredited &&
+              (showCreditNoteForm ? (
+                <div className="flex flex-wrap items-end gap-3">
+                  <Input label="Číslo dobropisu" value={creditNoteNumber} onChange={(e) => setCreditNoteNumber(e.target.value)} className="max-w-[180px]" />
+                  <Input label="Dôvod (voliteľné)" value={creditNoteReason} onChange={(e) => setCreditNoteReason(e.target.value)} className="max-w-xs" />
+                  <Button variant="secondary" loading={creditNoteBusy} onClick={handleCreateCreditNote}>
+                    Vystaviť dobropis (celá suma)
+                  </Button>
+                  <Button variant="ghost" onClick={() => setShowCreditNoteForm(false)}>
+                    Zrušiť
+                  </Button>
+                </div>
+              ) : (
+                <Button variant="secondary" onClick={() => setShowCreditNoteForm(true)} className="self-start">
+                  + Vystaviť dobropis
+                </Button>
+              ))}
+          </CardBody>
+        </Card>
+      )}
 
       <Card>
         <CardHeader title="Odberateľ" />

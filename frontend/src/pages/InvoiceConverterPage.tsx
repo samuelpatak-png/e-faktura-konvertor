@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { invoiceApi, partnerApi, apiErrorMessage, apiValidationErrors } from "../lib/api";
 import type { CustomerInput, ExtractedInvoiceData, GenerateResult, InvoiceInput, InvoiceLineInput, Partner, ValidationResult } from "../lib/types";
+import { useAuth } from "../lib/auth";
 import { Card, CardBody, CardHeader } from "../components/ui/Card";
 import { Input } from "../components/ui/Input";
 import { Button } from "../components/ui/Button";
@@ -30,6 +31,8 @@ function emptyLines(): InvoiceLineInput[] {
 
 export function InvoiceConverterPage() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const isVatPayer = Boolean(user?.companyProfile?.icDph);
 
   const [customer, setCustomer] = useState<CustomerInput>(EMPTY_CUSTOMER);
   const [number, setNumber] = useState("");
@@ -37,6 +40,10 @@ export function InvoiceConverterPage() {
   const [dueDate, setDueDate] = useState(plusDays(today(), 14));
   const [buyerReference, setBuyerReference] = useState("");
   const [lines, setLines] = useState<InvoiceLineInput[]>(emptyLines());
+
+  const [isAdvanceTaxDocument, setIsAdvanceTaxDocument] = useState(false);
+  const [prepaidAmount, setPrepaidAmount] = useState("");
+  const [prepaidReference, setPrepaidReference] = useState("");
 
   const [validation, setValidation] = useState<ValidationResult | null>(null);
   const [validating, setValidating] = useState(false);
@@ -134,6 +141,9 @@ export function InvoiceConverterPage() {
       dueDate,
       buyerReference,
       lines,
+      isAdvanceTaxDocument: isVatPayer && isAdvanceTaxDocument ? true : undefined,
+      prepaidAmountCents: prepaidAmount ? Math.round(Number(prepaidAmount) * 100) : undefined,
+      prepaidReference: prepaidReference.trim() || undefined,
     };
   }
 
@@ -374,6 +384,49 @@ export function InvoiceConverterPage() {
               invalidateValidation();
             }}
           />
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader
+          title="Preddavok (voliteľné)"
+          description="Vyplň, ak odberateľ už časť sumy zaplatil vopred — odpočíta sa zo sumy na úhradu."
+        />
+        <CardBody className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Input
+            label="Už uhradený preddavok (€)"
+            type="number"
+            min={0}
+            step="0.01"
+            value={prepaidAmount}
+            onChange={(e) => {
+              setPrepaidAmount(e.target.value);
+              invalidateValidation();
+            }}
+          />
+          <Input
+            label="Referencia na preddavkový doklad"
+            hint="Napr. číslo daňového dokladu k prijatej platbe — EN16931 nemá na toto štruktúrované pole, ide ako poznámka"
+            value={prepaidReference}
+            onChange={(e) => {
+              setPrepaidReference(e.target.value);
+              invalidateValidation();
+            }}
+          />
+          {isVatPayer && (
+            <label className="flex items-start gap-2 text-sm text-ink-700 sm:col-span-2">
+              <input
+                type="checkbox"
+                className="mt-0.5 h-4 w-4 rounded border-line text-brand-600 focus:ring-brand-500"
+                checked={isAdvanceTaxDocument}
+                onChange={(e) => {
+                  setIsAdvanceTaxDocument(e.target.checked);
+                  invalidateValidation();
+                }}
+              />
+              Toto je daňový doklad k prijatej platbe (preddavku), nie bežná faktúra — InvoiceTypeCode 386
+            </label>
+          )}
         </CardBody>
       </Card>
 

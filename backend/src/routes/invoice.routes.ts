@@ -16,5 +16,6 @@ router.get("/:id/download", asyncHandler(invoiceController.downloadInvoice));
 router.post("/:id/send-sapi", asyncHandler(invoiceController.sendInvoiceViaSapi));
 router.post("/:id/payments", asyncHandler(invoiceController.recordPayment));
 router.post("/:id/cancel", asyncHandler(invoiceController.cancelInvoice));
+router.post("/:id/credit-note", asyncHandler(invoiceController.createCreditNote));
 
 export default router;

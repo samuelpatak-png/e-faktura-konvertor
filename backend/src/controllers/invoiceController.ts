@@ -1,10 +1,10 @@
 import type { Request, Response } from "express";
 import { prisma } from "../lib/prisma";
 import type { CompanyProfile, Invoice } from "@prisma/client";
-import { invoiceInputSchema, recordPaymentSchema, type InvoiceInput } from "../validators/schemas";
+import { invoiceInputSchema, recordPaymentSchema, creditNoteInputSchema, type InvoiceInput } from "../validators/schemas";
 import { computeInvoiceTotals, centsToEur, type ComputedInvoiceTotals } from "../services/invoiceMath";
 import { validateComputedInvoice, type ValidationResult } from "../services/invoiceValidator";
-import { generateInvoiceXml } from "../services/xmlGenerator";
+import { generateInvoiceXml, generateCreditNoteXml } from "../services/xmlGenerator";
 import { decryptSecret } from "../lib/crypto";
 import { sendInvoiceViaSapiSk } from "../services/sapiSkClient";
 import { computePaymentStatus, isOverdue, daysOverdue, agingBucket } from "../services/paymentStatus";
@@ -20,6 +20,9 @@ function buildXml(data: InvoiceInput, supplier: CompanyProfile, totals: Computed
     dueDate: data.dueDate,
     buyerReference: data.buyerReference,
     currency: "EUR",
+    invoiceTypeCode: data.isAdvanceTaxDocument ? "386" : "380",
+    prepaidAmountCents: data.prepaidAmountCents,
+    prepaidReference: data.prepaidReference,
     supplier: {
       name: supplier.name,
       ico: supplier.ico,
@@ -106,7 +109,20 @@ export async function generateInvoice(req: Request, res: Response) {
   }
 
   const data = parsed.data;
+
+  if (data.isAdvanceTaxDocument && !supplier.icDph) {
+    return res.status(400).json({
+      success: false,
+      errors: ["Daňový doklad k prijatej platbe môže vystaviť len platca DPH (chýba IČ DPH v Nastaveniach)."],
+    });
+  }
+
   const totals = computeInvoiceTotals(data);
+
+  if (data.prepaidAmountCents && data.prepaidAmountCents > totals.grossAmountCents) {
+    return res.status(400).json({ success: false, errors: ["Uhradený preddavok nemôže presiahnuť sumu faktúry."] });
+  }
+
   const validation = validate(data, supplier, totals);
 
   if (!validation.valid) {
@@ -114,6 +130,7 @@ export async function generateInvoice(req: Request, res: Response) {
   }
 
   const xml = buildXml(data, supplier, totals);
+  const paidAmountCents = data.prepaidAmountCents ?? 0;
 
   try {
     const invoice = await prisma.invoice.create({
@@ -125,6 +142,14 @@ export async function generateInvoice(req: Request, res: Response) {
         buyerReference: data.buyerReference,
         currency: "EUR",
         status: "GENERATED",
+        documentType: data.isAdvanceTaxDocument ? "ADVANCE_TAX_DOCUMENT" : "INVOICE",
+        prepaidAmountCents: data.prepaidAmountCents,
+        prepaidReference: data.prepaidReference,
+        // A declared prepayment counts as already paid on this invoice from day one — see WP4
+        // handoff for why (the money was already received, just not yet against *this* row).
+        paidAmountCents,
+        paymentStatus: computePaymentStatus(paidAmountCents, totals.grossAmountCents),
+        paidAt: paidAmountCents > 0 && paidAmountCents >= totals.grossAmountCents ? new Date() : undefined,
         supplierName: supplier.name,
         supplierIco: supplier.ico,
         supplierDic: supplier.dic,
@@ -188,6 +213,8 @@ export async function listInvoices(req: Request, res: Response) {
       paymentStatus: true,
       paidAmountCents: true,
       paidAt: true,
+      documentType: true,
+      originalInvoiceId: true,
     },
   });
   res.json(
@@ -198,7 +225,11 @@ export async function listInvoices(req: Request, res: Response) {
 export async function getInvoice(req: Request, res: Response) {
   const invoice = await prisma.invoice.findFirst({
     where: { id: req.params.id, userId: req.userId! },
-    include: { lines: { orderBy: { sortOrder: "asc" } } },
+    include: {
+      lines: { orderBy: { sortOrder: "asc" } },
+      original: { select: { id: true, number: true, issueDate: true } },
+      corrections: { select: { id: true, number: true, issueDate: true, grossAmountCents: true } },
+    },
   });
   if (!invoice) return res.status(404).json({ error: "Faktúra nenájdená" });
   res.json({ ...invoice, ...paymentFields(invoice) });
@@ -254,6 +285,9 @@ export async function recordPayment(req: Request, res: Response) {
   const invoice = await prisma.invoice.findFirst({ where: { id: req.params.id, userId: req.userId! } });
   if (!invoice) return res.status(404).json({ error: "Faktúra nenájdená" });
 
+  if (invoice.documentType !== "INVOICE") {
+    return res.status(400).json({ error: "Úhradu možno zaznamenať len na bežnú faktúru." });
+  }
   if (invoice.paymentStatus === "CANCELLED") {
     return res.status(400).json({ error: "Faktúra je stornovaná, nemožno na ňu zaznamenať úhradu" });
   }
@@ -286,6 +320,9 @@ export async function cancelInvoice(req: Request, res: Response) {
   const invoice = await prisma.invoice.findFirst({ where: { id: req.params.id, userId: req.userId! } });
   if (!invoice) return res.status(404).json({ error: "Faktúra nenájdená" });
 
+  if (invoice.documentType !== "INVOICE") {
+    return res.status(400).json({ error: "Stornovať možno len bežnú faktúru." });
+  }
   if (invoice.paymentStatus === "PAID") {
     return res.status(400).json({ error: "Uhradenú faktúru nemožno takto stornovať — vystav dobropis." });
   }
@@ -303,7 +340,10 @@ export async function cancelInvoice(req: Request, res: Response) {
 
 export async function getUnpaidSummary(req: Request, res: Response) {
   const invoices = await prisma.invoice.findMany({
-    where: { userId: req.userId!, paymentStatus: { in: ["UNPAID", "PARTIALLY_PAID"] } },
+    // documentType: INVOICE only — a credit note or advance tax document isn't itself a
+    // receivable in the "money someone still owes me for a delivery" sense this dashboard
+    // tracks (see WP4 handoff).
+    where: { userId: req.userId!, documentType: "INVOICE", paymentStatus: { in: ["UNPAID", "PARTIALLY_PAID"] } },
     select: { id: true, number: true, customerName: true, dueDate: true, grossAmountCents: true, paidAmountCents: true },
   });
 
@@ -324,4 +364,159 @@ export async function getUnpaidSummary(req: Request, res: Response) {
   }
 
   res.json({ totalOutstandingCents, count: invoices.length, buckets });
+}
+
+export async function createCreditNote(req: Request, res: Response) {
+  const parsed = creditNoteInputSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ success: false, errors: parsed.error.issues.map((i) => i.message) });
+  }
+
+  const original = await prisma.invoice.findFirst({
+    where: { id: req.params.id, userId: req.userId! },
+    include: { lines: { orderBy: { sortOrder: "asc" } } },
+  });
+  if (!original) return res.status(404).json({ success: false, errors: ["Faktúra nenájdená"] });
+  if (original.documentType !== "INVOICE") {
+    return res.status(400).json({ success: false, errors: ["Dobropis možno vystaviť len k bežnej faktúre."] });
+  }
+  if (original.paymentStatus === "CANCELLED") {
+    return res.status(400).json({ success: false, errors: ["Faktúra je stornovaná — dobropis k nej nedáva zmysel."] });
+  }
+
+  const data = parsed.data;
+
+  // No lines supplied → credit the original invoice in full (its own lines, verbatim).
+  const lineInputs = data.lines ?? original.lines.map((l) => ({
+    description: l.description,
+    quantity: l.quantity,
+    unitCode: l.unitCode,
+    unitPrice: centsToEur(l.unitPriceCents),
+    taxRatePercent: l.taxRatePercent as 23 | 19 | 5 | 0,
+  }));
+
+  const totals = computeInvoiceTotals({ lines: lineInputs });
+
+  const alreadyCreditedCents = await prisma.invoice.aggregate({
+    where: { userId: req.userId!, documentType: "CREDIT_NOTE", originalInvoiceId: original.id },
+    _sum: { grossAmountCents: true },
+  });
+  const creditedSoFar = alreadyCreditedCents._sum.grossAmountCents ?? 0;
+  if (creditedSoFar + totals.grossAmountCents > original.grossAmountCents) {
+    const remaining = centsToEur(original.grossAmountCents - creditedSoFar);
+    return res.status(400).json({
+      success: false,
+      errors: [`Súčet dobropisov by presiahol sumu pôvodnej faktúry (zostáva možné dobropisovať ${remaining.toFixed(2)} €).`],
+    });
+  }
+
+  const buyerReference = data.buyerReference ?? original.buyerReference;
+
+  const validation = validateComputedInvoice({
+    supplierDic: original.supplierDic,
+    supplierIcDph: original.supplierIcDph,
+    customerDic: original.customerDic,
+    buyerReference,
+    lines: totals.lines,
+    netAmountCents: totals.netAmountCents,
+    taxAmountCents: totals.taxAmountCents,
+    grossAmountCents: totals.grossAmountCents,
+    taxBreakdown: totals.taxBreakdown,
+  });
+  if (!validation.valid) {
+    return res.status(422).json({ success: false, validation, summary: summaryFromTotals(totals) });
+  }
+
+  const xml = generateCreditNoteXml({
+    number: data.number,
+    issueDate: data.issueDate,
+    originalInvoiceNumber: original.number,
+    originalInvoiceIssueDate: original.issueDate,
+    buyerReference,
+    currency: original.currency,
+    note: data.reason,
+    supplier: {
+      name: original.supplierName,
+      ico: original.supplierIco,
+      dic: original.supplierDic,
+      icDph: original.supplierIcDph ?? undefined,
+      street: original.supplierStreet,
+      city: original.supplierCity,
+      postalCode: original.supplierPostalCode,
+      country: original.supplierCountry,
+      iban: original.supplierIban,
+      bic: original.supplierBic ?? undefined,
+    },
+    customer: {
+      name: original.customerName,
+      ico: original.customerIco,
+      dic: original.customerDic,
+      icDph: original.customerIcDph ?? undefined,
+      street: original.customerStreet,
+      city: original.customerCity,
+      postalCode: original.customerPostalCode,
+      country: original.customerCountry,
+    },
+    lines: totals.lines,
+    netAmountCents: totals.netAmountCents,
+    taxAmountCents: totals.taxAmountCents,
+    grossAmountCents: totals.grossAmountCents,
+    taxBreakdown: totals.taxBreakdown,
+  });
+
+  try {
+    const creditNote = await prisma.invoice.create({
+      data: {
+        userId: req.userId!,
+        number: data.number,
+        issueDate: data.issueDate,
+        dueDate: data.issueDate, // CreditNoteType has no DueDate concept in UBL — see WP4 handoff
+        buyerReference,
+        currency: original.currency,
+        status: "GENERATED",
+        documentType: "CREDIT_NOTE",
+        originalInvoiceId: original.id,
+        supplierName: original.supplierName,
+        supplierIco: original.supplierIco,
+        supplierDic: original.supplierDic,
+        supplierIcDph: original.supplierIcDph,
+        supplierStreet: original.supplierStreet,
+        supplierCity: original.supplierCity,
+        supplierPostalCode: original.supplierPostalCode,
+        supplierCountry: original.supplierCountry,
+        supplierIban: original.supplierIban,
+        supplierBic: original.supplierBic,
+        customerName: original.customerName,
+        customerIco: original.customerIco,
+        customerDic: original.customerDic,
+        customerIcDph: original.customerIcDph,
+        customerStreet: original.customerStreet,
+        customerCity: original.customerCity,
+        customerPostalCode: original.customerPostalCode,
+        customerCountry: original.customerCountry,
+        netAmountCents: totals.netAmountCents,
+        taxAmountCents: totals.taxAmountCents,
+        grossAmountCents: totals.grossAmountCents,
+        xml,
+        lines: {
+          create: totals.lines.map((l) => ({
+            sortOrder: l.sortOrder,
+            description: l.description,
+            quantity: l.quantity,
+            unitCode: l.unitCode,
+            unitPriceCents: l.unitPriceCents,
+            taxRatePercent: l.taxRatePercent,
+            lineNetCents: l.lineNetCents,
+          })),
+        },
+      },
+    });
+
+    res.status(201).json({ success: true, invoiceId: creditNote.id, xml, validation, summary: summaryFromTotals(totals) });
+  } catch (err: any) {
+    if (err.code === "P2002") {
+      return res.status(409).json({ success: false, errors: [`Doklad s číslom "${data.number}" už existuje.`] });
+    }
+    throw err;
+  }
 }

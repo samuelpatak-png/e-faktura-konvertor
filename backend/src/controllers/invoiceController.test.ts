@@ -31,7 +31,10 @@ async function createUser(email: string) {
   return prisma.user.create({ data: { email, passwordHash: "x" } });
 }
 
-async function createInvoice(userId: string, overrides: Partial<{ number: string; dueDate: string; grossAmountCents: number }> = {}) {
+async function createInvoice(
+  userId: string,
+  overrides: Partial<{ number: string; dueDate: string; grossAmountCents: number; documentType: "INVOICE" | "CREDIT_NOTE" | "ADVANCE_TAX_DOCUMENT"; originalInvoiceId: string; supplierIcDph: string | null }> = {}
+) {
   return prisma.invoice.create({
     data: {
       userId,
@@ -44,7 +47,9 @@ async function createInvoice(userId: string, overrides: Partial<{ number: string
       supplierName: "Dodávateľ s.r.o.",
       supplierIco: "11111111",
       supplierDic: "1111111111",
-      supplierIcDph: "SK1111111111",
+      supplierIcDph: overrides.supplierIcDph !== undefined ? overrides.supplierIcDph : "SK1111111111",
+      documentType: overrides.documentType ?? "INVOICE",
+      originalInvoiceId: overrides.originalInvoiceId,
       supplierStreet: "Ulica 1",
       supplierCity: "Bratislava",
       supplierPostalCode: "81101",
@@ -59,9 +64,107 @@ async function createInvoice(userId: string, overrides: Partial<{ number: string
       netAmountCents: 10000,
       taxAmountCents: 0,
       grossAmountCents: overrides.grossAmountCents ?? 10000,
+      lines: {
+        create: [
+          {
+            sortOrder: 0,
+            description: "Konzultačné služby",
+            quantity: 1,
+            unitCode: "C62",
+            unitPriceCents: overrides.grossAmountCents ?? 10000,
+            taxRatePercent: 0,
+            lineNetCents: overrides.grossAmountCents ?? 10000,
+          },
+        ],
+      },
     },
   });
 }
+
+async function createCompanyProfile(userId: string, overrides: Partial<{ icDph: string | null }> = {}) {
+  return prisma.companyProfile.create({
+    data: {
+      userId,
+      name: "Dodávateľ s.r.o.",
+      ico: "11111111",
+      dic: "1111111111",
+      icDph: overrides.icDph !== undefined ? overrides.icDph : "SK1111111111",
+      street: "Ulica 1",
+      city: "Bratislava",
+      postalCode: "81101",
+      country: "SK",
+      iban: "SK9711000000002612345678",
+    },
+  });
+}
+
+function validInvoiceBody(overrides: Record<string, unknown> = {}) {
+  return {
+    customer: { name: "Odberateľ s.r.o.", dic: "2222222222", street: "Ulica 2", city: "Košice", postalCode: "04001", country: "SK" },
+    number: "2026-0001",
+    issueDate: "2026-08-01",
+    dueDate: "2026-08-15",
+    buyerReference: "OBJ-1",
+    lines: [{ description: "Položka", quantity: 1, unitCode: "C62", unitPrice: 100, taxRatePercent: 0 }],
+    ...overrides,
+  };
+}
+
+describe("invoiceController generateInvoice — WP4 additions", () => {
+  it("rejects an advance tax document from a non-VAT-registered supplier", async () => {
+    const user = await createUser("vatless@example.com");
+    await createCompanyProfile(user.id, { icDph: null });
+    const res = mockRes();
+    await invoiceController.generateInvoice(mockReq(user.id, { body: validInvoiceBody({ isAdvanceTaxDocument: true }) }), res);
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("allows an advance tax document from a VAT-registered supplier and records InvoiceTypeCode 386", async () => {
+    const user = await createUser("vat@example.com");
+    await createCompanyProfile(user.id);
+    const res = mockRes();
+    await invoiceController.generateInvoice(mockReq(user.id, { body: validInvoiceBody({ isAdvanceTaxDocument: true }) }), res);
+    expect(res.statusCode).toBe(201);
+    const xml = (res.body as { xml: string }).xml;
+    expect(xml).toContain("<cbc:InvoiceTypeCode>386</cbc:InvoiceTypeCode>");
+
+    const stored = await prisma.invoice.findUnique({ where: { id: (res.body as { invoiceId: string }).invoiceId } });
+    expect(stored?.documentType).toBe("ADVANCE_TAX_DOCUMENT");
+  });
+
+  it("rejects a prepaid amount larger than the invoice total", async () => {
+    const user = await createUser("prepay-over@example.com");
+    await createCompanyProfile(user.id);
+    const res = mockRes();
+    await invoiceController.generateInvoice(mockReq(user.id, { body: validInvoiceBody({ prepaidAmountCents: 100_001 }) }), res);
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("marks a fully-prepaid invoice PAID immediately on creation", async () => {
+    const user = await createUser("prepay-full@example.com");
+    await createCompanyProfile(user.id);
+    const res = mockRes();
+    await invoiceController.generateInvoice(mockReq(user.id, { body: validInvoiceBody({ prepaidAmountCents: 10000 }) }), res);
+    expect(res.statusCode).toBe(201);
+
+    const stored = await prisma.invoice.findUnique({ where: { id: (res.body as { invoiceId: string }).invoiceId } });
+    expect(stored?.paymentStatus).toBe("PAID");
+    expect(stored?.paidAmountCents).toBe(10000);
+    expect(stored?.paidAt).not.toBeNull();
+  });
+
+  it("marks a partially-prepaid invoice PARTIALLY_PAID on creation", async () => {
+    const user = await createUser("prepay-partial@example.com");
+    await createCompanyProfile(user.id);
+    const res = mockRes();
+    await invoiceController.generateInvoice(mockReq(user.id, { body: validInvoiceBody({ prepaidAmountCents: 4000 }) }), res);
+    expect(res.statusCode).toBe(201);
+
+    const stored = await prisma.invoice.findUnique({ where: { id: (res.body as { invoiceId: string }).invoiceId } });
+    expect(stored?.paymentStatus).toBe("PARTIALLY_PAID");
+    expect(stored?.paidAmountCents).toBe(4000);
+  });
+});
 
 describe("invoiceController payments", () => {
   let userA: { id: string };
@@ -130,6 +233,13 @@ describe("invoiceController payments", () => {
       expect(res.statusCode).toBe(400);
     });
 
+    it("refuses to record a payment on a credit note", async () => {
+      const creditNote = await createInvoice(userA.id, { documentType: "CREDIT_NOTE" });
+      const res = mockRes();
+      await invoiceController.recordPayment(mockReq(userA.id, { params: { id: creditNote.id }, body: { amountCents: 100 } }), res);
+      expect(res.statusCode).toBe(400);
+    });
+
     it("user A cannot record a payment on user B's invoice", async () => {
       const invoice = await createInvoice(userB.id);
       const res = mockRes();
@@ -157,6 +267,13 @@ describe("invoiceController payments", () => {
 
       const res = mockRes();
       await invoiceController.cancelInvoice(mockReq(userA.id, { params: { id: invoice.id } }), res);
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("refuses to cancel a credit note", async () => {
+      const creditNote = await createInvoice(userA.id, { documentType: "CREDIT_NOTE" });
+      const res = mockRes();
+      await invoiceController.cancelInvoice(mockReq(userA.id, { params: { id: creditNote.id } }), res);
       expect(res.statusCode).toBe(400);
     });
 
@@ -228,6 +345,134 @@ describe("invoiceController payments", () => {
       const res = mockRes();
       await invoiceController.getUnpaidSummary(mockReq(userA.id), res);
       expect((res.body as { count: number }).count).toBe(0);
+    });
+
+    it("excludes credit notes and advance tax documents from the receivables total", async () => {
+      await createInvoice(userA.id, { number: "DB-1", documentType: "CREDIT_NOTE", grossAmountCents: 999999 });
+      await createInvoice(userA.id, { number: "DP-1", documentType: "ADVANCE_TAX_DOCUMENT", grossAmountCents: 999999 });
+      const res = mockRes();
+      await invoiceController.getUnpaidSummary(mockReq(userA.id), res);
+      expect((res.body as { count: number }).count).toBe(0);
+      expect((res.body as { totalOutstandingCents: number }).totalOutstandingCents).toBe(0);
+    });
+  });
+
+  describe("createCreditNote", () => {
+    it("credits the original invoice in full when no lines are supplied", async () => {
+      const original = await createInvoice(userA.id, { grossAmountCents: 10000 });
+      const res = mockRes();
+      await invoiceController.createCreditNote(
+        mockReq(userA.id, { params: { id: original.id }, body: { number: "DB-1", issueDate: "2026-08-20" } }),
+        res
+      );
+      expect(res.statusCode).toBe(201);
+
+      const stored = await prisma.invoice.findUnique({ where: { id: (res.body as { invoiceId: string }).invoiceId } });
+      expect(stored?.documentType).toBe("CREDIT_NOTE");
+      expect(stored?.originalInvoiceId).toBe(original.id);
+      expect(stored?.grossAmountCents).toBe(10000);
+    });
+
+    it("rejects a credit note whose lines would exceed the original invoice total", async () => {
+      const original = await createInvoice(userA.id, { grossAmountCents: 10000 });
+      const res = mockRes();
+      await invoiceController.createCreditNote(
+        mockReq(userA.id, {
+          params: { id: original.id },
+          body: {
+            number: "DB-1",
+            issueDate: "2026-08-20",
+            lines: [{ description: "Nadmerný dobropis", quantity: 1, unitCode: "C62", unitPrice: 200, taxRatePercent: 0 }],
+          },
+        }),
+        res
+      );
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects a second credit note once the first already used up the full original amount", async () => {
+      const original = await createInvoice(userA.id, { grossAmountCents: 10000 });
+      await invoiceController.createCreditNote(
+        mockReq(userA.id, { params: { id: original.id }, body: { number: "DB-1", issueDate: "2026-08-20" } }),
+        mockRes()
+      );
+
+      const res = mockRes();
+      await invoiceController.createCreditNote(
+        mockReq(userA.id, {
+          params: { id: original.id },
+          body: {
+            number: "DB-2",
+            issueDate: "2026-08-21",
+            lines: [{ description: "Ďalší dobropis", quantity: 1, unitCode: "C62", unitPrice: 1, taxRatePercent: 0 }],
+          },
+        }),
+        res
+      );
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("allows a partial credit note that leaves room for a second one within the original total", async () => {
+      const original = await createInvoice(userA.id, { grossAmountCents: 10000 });
+      const first = mockRes();
+      await invoiceController.createCreditNote(
+        mockReq(userA.id, {
+          params: { id: original.id },
+          body: {
+            number: "DB-1",
+            issueDate: "2026-08-20",
+            lines: [{ description: "Čiastočný dobropis", quantity: 1, unitCode: "C62", unitPrice: 40, taxRatePercent: 0 }],
+          },
+        }),
+        first
+      );
+      expect(first.statusCode).toBe(201);
+
+      const second = mockRes();
+      await invoiceController.createCreditNote(
+        mockReq(userA.id, {
+          params: { id: original.id },
+          body: {
+            number: "DB-2",
+            issueDate: "2026-08-21",
+            lines: [{ description: "Zvyšný dobropis", quantity: 1, unitCode: "C62", unitPrice: 60, taxRatePercent: 0 }],
+          },
+        }),
+        second
+      );
+      expect(second.statusCode).toBe(201);
+    });
+
+    it("refuses to credit-note a cancelled invoice", async () => {
+      const original = await createInvoice(userA.id);
+      await invoiceController.cancelInvoice(mockReq(userA.id, { params: { id: original.id } }), mockRes());
+
+      const res = mockRes();
+      await invoiceController.createCreditNote(
+        mockReq(userA.id, { params: { id: original.id }, body: { number: "DB-1", issueDate: "2026-08-20" } }),
+        res
+      );
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("refuses to credit-note a credit note", async () => {
+      const creditNote = await createInvoice(userA.id, { documentType: "CREDIT_NOTE" });
+      const res = mockRes();
+      await invoiceController.createCreditNote(
+        mockReq(userA.id, { params: { id: creditNote.id }, body: { number: "DB-1", issueDate: "2026-08-20" } }),
+        res
+      );
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("user A cannot credit-note user B's invoice", async () => {
+      const original = await createInvoice(userB.id, { grossAmountCents: 10000 });
+      const res = mockRes();
+      await invoiceController.createCreditNote(
+        mockReq(userA.id, { params: { id: original.id }, body: { number: "DB-1", issueDate: "2026-08-20" } }),
+        res
+      );
+      expect(res.statusCode).toBe(404);
     });
   });
 });

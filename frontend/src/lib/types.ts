@@ -95,6 +95,18 @@ export interface InvoiceInput {
   dueDate: string;
   buyerReference: string;
   lines: InvoiceLineInput[];
+  // WP4 — advance/preddavok handling, see xmlGenerator.ts and the WP4 handoff.
+  isAdvanceTaxDocument?: boolean;
+  prepaidAmountCents?: number;
+  prepaidReference?: string;
+}
+
+export interface CreditNoteInput {
+  number: string;
+  issueDate: string;
+  buyerReference?: string;
+  reason?: string;
+  lines?: InvoiceLineInput[];
 }
 
 export interface TaxBreakdownItem {
@@ -128,6 +140,7 @@ export interface GenerateResult {
 }
 
 export type PaymentStatus = "UNPAID" | "PARTIALLY_PAID" | "PAID" | "CANCELLED";
+export type DocumentType = "INVOICE" | "CREDIT_NOTE" | "ADVANCE_TAX_DOCUMENT";
 
 export interface InvoiceListItem {
   id: string;
@@ -145,6 +158,8 @@ export interface InvoiceListItem {
   paidAt: string | null;
   overdue: boolean;
   daysOverdue: number;
+  documentType: DocumentType;
+  originalInvoiceId: string | null;
 }
 
 export interface UnpaidSummaryBucket {
@@ -185,6 +200,10 @@ export interface InvoiceDetail extends InvoiceListItem {
   xml: string | null;
   sapiProviderDocumentId: string | null;
   lines: InvoiceLineDetail[];
+  prepaidAmountCents: number | null;
+  prepaidReference: string | null;
+  original: { id: string; number: string; issueDate: string } | null;
+  corrections: { id: string; number: string; issueDate: string; grossAmountCents: number }[];
 }
 
 export interface ExtractedField<T> {
