@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { customerSchema, emailSettingsSchema, invoiceLineSchema, partnerSchema, priceListItemSchema, reminderSettingsSchema, sendInvoiceEmailSchema } from "./schemas";
+import { customerSchema, emailSettingsSchema, invoiceInputSchema, invoiceLineSchema, partnerSchema, priceListItemSchema, reminderSettingsSchema, sendInvoiceEmailSchema } from "./schemas";
 
 const base = {
   description: "Test",
@@ -48,6 +48,16 @@ describe("invoiceLineSchema", () => {
 
   it("rejects a unit code that isn't a real UN/ECE Rec 20 code", () => {
     expect(invoiceLineSchema.safeParse({ ...base, unitCode: "NOT_A_REAL_CODE" }).success).toBe(false);
+  });
+
+  it("accepts a quantity with up to 3 decimal places", () => {
+    expect(invoiceLineSchema.safeParse({ ...base, quantity: 1.5 }).success).toBe(true);
+    expect(invoiceLineSchema.safeParse({ ...base, quantity: 0.125 }).success).toBe(true);
+  });
+
+  it("rejects a quantity with more than 3 decimal places", () => {
+    const result = invoiceLineSchema.safeParse({ ...base, quantity: 1.23456 });
+    expect(result.success).toBe(false);
   });
 });
 
@@ -235,5 +245,66 @@ describe("sendInvoiceEmailSchema", () => {
 
   it("rejects a malformed `to` override", () => {
     expect(sendInvoiceEmailSchema.safeParse({ to: "not-an-email" }).success).toBe(false);
+  });
+});
+
+const validInvoiceInput = {
+  customer: { name: "Odberateľ s.r.o.", dic: "2222222222", street: "Ulica 2", city: "Košice", postalCode: "04001", country: "SK" },
+  number: "2026-0001",
+  issueDate: "2026-08-01",
+  dueDate: "2026-08-15",
+  buyerReference: "OBJ-1",
+  lines: [{ description: "Položka", quantity: 1, unitCode: "C62", unitPrice: 100, taxRatePercent: 23 }],
+};
+
+describe("invoiceInputSchema — date validity (dateSchema, shared by issueDate/dueDate)", () => {
+  it("accepts a real calendar date", () => {
+    expect(invoiceInputSchema.safeParse(validInvoiceInput).success).toBe(true);
+  });
+
+  // Regression: `new Date("2026-02-31")` does not produce Invalid Date in JS — it silently
+  // rolls over to 2026-03-03, so a naive `!isNaN(new Date(v).getTime())` check let this through.
+  it("rejects 2026-02-31 — not a real calendar day (2026 isn't a leap year and February never has 31 days)", () => {
+    const result = invoiceInputSchema.safeParse({ ...validInvoiceInput, issueDate: "2026-02-31" });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects 2026-02-30 the same way", () => {
+    expect(invoiceInputSchema.safeParse({ ...validInvoiceInput, dueDate: "2026-02-30" }).success).toBe(false);
+  });
+
+  it("accepts 2026-02-28 (2026 is not a leap year) and would accept 2024-02-29 (2024 is)", () => {
+    expect(invoiceInputSchema.safeParse({ ...validInvoiceInput, issueDate: "2026-02-28", dueDate: "2026-02-28" }).success).toBe(true);
+    expect(invoiceInputSchema.safeParse({ ...validInvoiceInput, issueDate: "2024-02-29", dueDate: "2024-02-29" }).success).toBe(true);
+  });
+
+  it("rejects 2024-02-30 (not a leap-year exception — February never has 30 days)", () => {
+    expect(invoiceInputSchema.safeParse({ ...validInvoiceInput, issueDate: "2024-02-30" }).success).toBe(false);
+  });
+
+  it("rejects month 13", () => {
+    expect(invoiceInputSchema.safeParse({ ...validInvoiceInput, issueDate: "2026-13-01" }).success).toBe(false);
+  });
+});
+
+describe("invoiceInputSchema — isAdvanceTaxDocument + prepaidAmountCents mutual exclusion", () => {
+  it("accepts isAdvanceTaxDocument alone (a 386 has no prepayment of its own)", () => {
+    expect(invoiceInputSchema.safeParse({ ...validInvoiceInput, isAdvanceTaxDocument: true }).success).toBe(true);
+  });
+
+  it("accepts prepaidAmountCents alone on a normal invoice", () => {
+    expect(invoiceInputSchema.safeParse({ ...validInvoiceInput, prepaidAmountCents: 5000 }).success).toBe(true);
+  });
+
+  // Regression: a 386 IS the document confirming receipt of an advance — it can't also carry
+  // its own prepaidAmountCents (a doklad about a doklad). Without this, generateInvoice's
+  // "mark a 386 PAID in full at creation" logic would have no unambiguous amount to use.
+  it("rejects isAdvanceTaxDocument together with a nonzero prepaidAmountCents", () => {
+    const result = invoiceInputSchema.safeParse({ ...validInvoiceInput, isAdvanceTaxDocument: true, prepaidAmountCents: 5000 });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts isAdvanceTaxDocument with prepaidAmountCents: 0 (falsy, not a real conflict)", () => {
+    expect(invoiceInputSchema.safeParse({ ...validInvoiceInput, isAdvanceTaxDocument: true, prepaidAmountCents: 0 }).success).toBe(true);
   });
 });

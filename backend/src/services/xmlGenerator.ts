@@ -68,6 +68,14 @@ export interface GenerateCreditNoteXmlInput extends AmountFields {
   note?: string | null; // e.g. reason for the credit note
 }
 
+// Guards against float noise (e.g. 2.0000000000000004 from client-side arithmetic) ending up
+// verbatim in InvoicedQuantity/CreditedQuantity — the Zod schema already caps new input to 3
+// decimals (see validators/schemas.ts quantitySchema), but this also covers rows created before
+// that cap existed. Trailing zeros are stripped so a whole number still renders as "1", not "1.000".
+function formatQuantity(quantity: number): string {
+  return quantity.toFixed(3).replace(/\.?0+$/, "");
+}
+
 function taxCategoryId(ratePercent: number): "S" | "Z" {
   // "Z" = zero-rated (still a taxable supply, just at 0%). Exemptions for other reasons
   // (category "E", intra-community "K", reverse charge "AE", etc.) aren't in MVP scope —
@@ -192,7 +200,7 @@ export function generateInvoiceXml(input: GenerateInvoiceXmlInput): string {
   for (const line of input.lines) {
     const lineEl = doc.ele("cac:InvoiceLine");
     lineEl.ele("cbc:ID").txt(String(line.sortOrder + 1)).up();
-    lineEl.ele("cbc:InvoicedQuantity", { unitCode: line.unitCode }).txt(String(line.quantity)).up();
+    lineEl.ele("cbc:InvoicedQuantity", { unitCode: line.unitCode }).txt(formatQuantity(line.quantity)).up();
     lineEl.ele("cbc:LineExtensionAmount", { currencyID: input.currency }).txt(centsToEur(line.lineNetCents).toFixed(2)).up();
 
     const item = lineEl.ele("cac:Item");
@@ -269,7 +277,7 @@ export function generateCreditNoteXml(input: GenerateCreditNoteXmlInput): string
   for (const line of input.lines) {
     const lineEl = doc.ele("cac:CreditNoteLine");
     lineEl.ele("cbc:ID").txt(String(line.sortOrder + 1)).up();
-    lineEl.ele("cbc:CreditedQuantity", { unitCode: line.unitCode }).txt(String(line.quantity)).up();
+    lineEl.ele("cbc:CreditedQuantity", { unitCode: line.unitCode }).txt(formatQuantity(line.quantity)).up();
     lineEl.ele("cbc:LineExtensionAmount", { currencyID: input.currency }).txt(centsToEur(line.lineNetCents).toFixed(2)).up();
 
     const item = lineEl.ele("cac:Item");

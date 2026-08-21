@@ -5,21 +5,21 @@ import { prisma } from "../lib/prisma";
 import { env } from "../lib/env";
 import { registerSchema, loginSchema } from "../validators/schemas";
 import { AUTH_COOKIE_NAME } from "../middleware/auth";
+import { profileDto } from "./companyController";
 
 const COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 // Bcrypt hash of an arbitrary, unused password — compared against for unknown emails so
 // login takes the same time whether or not the account exists (avoids leaking which via timing).
 const DUMMY_HASH = "$2a$12$CwTycUXWue0Thq9StjUM0uJ8mAcMdV9EWm8j3ChmH3euXPXtGH.jK";
 
+// A browser only deletes a cookie when the clearing Set-Cookie's attributes match the ones it
+// was set with (path/secure/sameSite in particular) — shared so logout's clearCookie can never
+// drift from what login/register actually set.
+const AUTH_COOKIE_OPTIONS = { httpOnly: true, secure: env.COOKIE_SECURE, sameSite: "lax" as const, path: "/" };
+
 function setAuthCookie(res: Response, userId: string) {
   const token = jwt.sign({ userId }, env.JWT_SECRET, { expiresIn: "30d" });
-  res.cookie(AUTH_COOKIE_NAME, token, {
-    httpOnly: true,
-    secure: env.COOKIE_SECURE,
-    sameSite: "lax",
-    maxAge: COOKIE_MAX_AGE_MS,
-    path: "/",
-  });
+  res.cookie(AUTH_COOKIE_NAME, token, { ...AUTH_COOKIE_OPTIONS, maxAge: COOKIE_MAX_AGE_MS });
 }
 
 export async function register(req: Request, res: Response) {
@@ -59,7 +59,7 @@ export async function login(req: Request, res: Response) {
 }
 
 export function logout(_req: Request, res: Response) {
-  res.clearCookie(AUTH_COOKIE_NAME, { path: "/" });
+  res.clearCookie(AUTH_COOKIE_NAME, AUTH_COOKIE_OPTIONS);
   res.status(204).send();
 }
 
@@ -69,5 +69,9 @@ export async function me(req: Request, res: Response) {
     select: { id: true, email: true, companyProfile: true },
   });
   if (!user) return res.status(404).json({ error: "Používateľ nenájdený" });
-  res.json(user);
+  // companyProfile here is the full row (blobs included) — select: { companyProfile: true }
+  // with no nested select pulls every scalar column. Shape it through the same DTO
+  // getCompanyProfile/upsertCompanyProfile use so /auth/me never ships base64 logo/stamp/
+  // signature data on every page-load refresh.
+  res.json({ ...user, companyProfile: user.companyProfile ? profileDto(user.companyProfile) : null });
 }

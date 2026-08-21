@@ -1,3 +1,7 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Request, Response } from "express";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { SMTPServer } from "smtp-server";
@@ -5,6 +9,29 @@ import { simpleParser, type ParsedMail } from "mailparser";
 import { prisma } from "../lib/prisma";
 import { encryptSecret } from "../lib/crypto";
 import * as invoiceController from "./invoiceController";
+
+// Same pdftotext-based extraction as pdfGenerator.test.ts, used here to prove the real DB ->
+// controller -> PDF pipeline (not just generateInvoicePdf in isolation) renders the correct
+// current balance — skipped everywhere pdftotext isn't installed.
+function hasPdftotext(): boolean {
+  try {
+    execFileSync("pdftotext", ["-v"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function extractPdfText(pdfBytes: Buffer): string {
+  const dir = mkdtempSync(join(tmpdir(), "invoice-controller-pdf-test-"));
+  const pdfPath = join(dir, "doc.pdf");
+  writeFileSync(pdfPath, pdfBytes);
+  try {
+    return execFileSync("pdftotext", [pdfPath, "-"], { encoding: "utf8" });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 function mockReq(userId: string, overrides: Partial<{ params: Record<string, string>; query: Record<string, string>; body: unknown }> = {}): Request {
   return { userId, params: {}, query: {}, body: {}, ...overrides } as unknown as Request;
@@ -236,6 +263,83 @@ describe("invoiceController generateInvoice — WP4 additions", () => {
     expect(stored?.paymentStatus).toBe("PARTIALLY_PAID");
     expect(stored?.paidAmountCents).toBe(4000);
   });
+
+  // Regression: a 386 ("daňový doklad k prijatej platbe") IS itself the document confirming a
+  // payment was received — it used to sit UNPAID forever (paidAmountCents only ever came from
+  // prepaidAmountCents, which a 386 never has one of), which could then show up as overdue.
+  it("marks an ADVANCE_TAX_DOCUMENT (386) PAID in full immediately, with no prepaidAmountCents of its own", async () => {
+    const user = await createUser("advance-paid@example.com");
+    await createCompanyProfile(user.id);
+    const res = mockRes();
+    await invoiceController.generateInvoice(mockReq(user.id, { body: validInvoiceBody({ isAdvanceTaxDocument: true }) }), res);
+    expect(res.statusCode).toBe(201);
+
+    const stored = await prisma.invoice.findUnique({ where: { id: (res.body as { invoiceId: string }).invoiceId } });
+    expect(stored?.paymentStatus).toBe("PAID");
+    expect(stored?.paidAmountCents).toBe(stored?.grossAmountCents);
+    expect(stored?.paidAt).not.toBeNull();
+
+    // Already excluded from the unpaid dashboard by documentType alone, but confirm the count too.
+    const summaryRes = mockRes();
+    await invoiceController.getUnpaidSummary(mockReq(user.id), summaryRes);
+    expect((summaryRes.body as { count: number }).count).toBe(0);
+  });
+
+  it("rejects isAdvanceTaxDocument combined with its own prepaidAmountCents (schema refine)", async () => {
+    const user = await createUser("advance-plus-prepaid@example.com");
+    await createCompanyProfile(user.id);
+    const res = mockRes();
+    await invoiceController.generateInvoice(
+      mockReq(user.id, { body: validInvoiceBody({ isAdvanceTaxDocument: true, prepaidAmountCents: 4000 }) }),
+      res
+    );
+    expect(res.statusCode).toBe(400);
+  });
+});
+
+describe("invoiceController validateInvoice — WP4/prepaid cap", () => {
+  it("rejects a prepaid amount larger than the invoice total, same as /generate", async () => {
+    const user = await createUser("validate-prepay-over@example.com");
+    await createCompanyProfile(user.id);
+    const res = mockRes();
+    await invoiceController.validateInvoice(mockReq(user.id, { body: validInvoiceBody({ prepaidAmountCents: 100_001 }) }), res);
+    expect(res.statusCode).toBe(400);
+    expect((res.body as { valid: boolean }).valid).toBe(false);
+  });
+
+  it("still validates normally when there's no prepaid amount", async () => {
+    const user = await createUser("validate-ok@example.com");
+    await createCompanyProfile(user.id);
+    const res = mockRes();
+    await invoiceController.validateInvoice(mockReq(user.id, { body: validInvoiceBody() }), res);
+    expect(res.statusCode).toBe(200);
+    expect((res.body as { valid: boolean }).valid).toBe(true);
+  });
+});
+
+describe("invoiceController — a CREDIT_NOTE's fake dueDate placeholder is never treated as a real due date", () => {
+  it("getInvoice reports overdue: false for a credit note regardless of how old its issueDate is", async () => {
+    const user = await createUser("credit-overdue@example.com");
+    await createCompanyProfile(user.id);
+    const oldDate = "2020-01-01"; // long past — would be "overdue" if treated as a real dueDate
+    const creditNote = await createInvoice(user.id, { documentType: "CREDIT_NOTE", dueDate: oldDate });
+
+    const res = mockRes();
+    await invoiceController.getInvoice(mockReq(user.id, { params: { id: creditNote.id } }), res);
+    expect((res.body as { overdue: boolean; daysOverdue: number }).overdue).toBe(false);
+    expect((res.body as { daysOverdue: number }).daysOverdue).toBe(0);
+  });
+
+  it("listInvoices reports the same for a credit note in the list view", async () => {
+    const user = await createUser("credit-overdue-list@example.com");
+    await createCompanyProfile(user.id);
+    await createInvoice(user.id, { documentType: "CREDIT_NOTE", dueDate: "2020-01-01" });
+
+    const res = mockRes();
+    await invoiceController.listInvoices(mockReq(user.id), res);
+    const [creditNote] = res.body as { overdue: boolean }[];
+    expect(creditNote.overdue).toBe(false);
+  });
 });
 
 describe("invoiceController payments", () => {
@@ -253,6 +357,17 @@ describe("invoiceController payments", () => {
       const res = mockRes();
       await invoiceController.recordPayment(mockReq(userA.id, { params: { id: invoice.id }, body: { amountCents: 100 } }), res);
       expect(Array.isArray((res.body as { lines: unknown }).lines)).toBe(true);
+    });
+
+    // Regression: InvoiceDetailPage.tsx computes creditedCents from `invoice.corrections`
+    // unconditionally (invoice.corrections.reduce(...)) — omitting it here (unlike getInvoice,
+    // which always includes it) crashed the page with "Cannot read properties of undefined
+    // (reading 'reduce')" immediately after recording a payment.
+    it("includes `corrections` in the response too, same shape as getInvoice", async () => {
+      const invoice = await createInvoice(userA.id);
+      const res = mockRes();
+      await invoiceController.recordPayment(mockReq(userA.id, { params: { id: invoice.id }, body: { amountCents: 100 } }), res);
+      expect(Array.isArray((res.body as { corrections: unknown }).corrections)).toBe(true);
     });
 
     it("records a partial payment and sets paymentStatus to PARTIALLY_PAID", async () => {
@@ -331,6 +446,7 @@ describe("invoiceController payments", () => {
       expect(res.statusCode).toBe(200);
       expect((res.body as { paymentStatus: string }).paymentStatus).toBe("CANCELLED");
       expect(Array.isArray((res.body as { lines: unknown }).lines)).toBe(true);
+      expect(Array.isArray((res.body as { corrections: unknown }).corrections)).toBe(true);
     });
 
     it("refuses to cancel a fully paid invoice", async () => {
@@ -545,6 +661,169 @@ describe("invoiceController payments", () => {
         res
       );
       expect(res.statusCode).toBe(404);
+    });
+  });
+
+  // Bug cluster 1+2+6: a credit note used to only create the CREDIT_NOTE row — the original
+  // invoice's own paidAmountCents/paymentStatus, the unpaid dashboard, recordPayment's cap, the
+  // PDF/QR payable amount, and the reminder scheduler all kept treating the original as if
+  // nothing had been credited away.
+  describe("createCreditNote — updates the original invoice's outstanding balance/status", () => {
+    it("a partial credit note reduces the original's paymentStatus to PARTIALLY_PAID and getUnpaidSummary's outstanding total", async () => {
+      const original = await createInvoice(userA.id, { number: "ORIG-1", grossAmountCents: 100000 });
+      await invoiceController.createCreditNote(
+        mockReq(userA.id, {
+          params: { id: original.id },
+          body: { number: "DB-1", issueDate: "2026-08-20", lines: [{ description: "Čiastočný dobropis", quantity: 1, unitCode: "C62", unitPrice: 300, taxRatePercent: 0 }] },
+        }),
+        mockRes()
+      );
+
+      const stored = await prisma.invoice.findUnique({ where: { id: original.id } });
+      expect(stored?.paymentStatus).toBe("PARTIALLY_PAID");
+      expect(stored?.paidAmountCents).toBe(0); // credit notes never touch actual cash-received tracking
+
+      const summaryRes = mockRes();
+      await invoiceController.getUnpaidSummary(mockReq(userA.id), summaryRes);
+      expect((summaryRes.body as { totalOutstandingCents: number }).totalOutstandingCents).toBe(70000); // 1000 - 300 credited
+    });
+
+    it("a full credit note marks the original PAID and removes it from getUnpaidSummary", async () => {
+      const original = await createInvoice(userA.id, { number: "ORIG-2", grossAmountCents: 10000 });
+      await invoiceController.createCreditNote(
+        mockReq(userA.id, { params: { id: original.id }, body: { number: "DB-1", issueDate: "2026-08-20" } }),
+        mockRes()
+      );
+
+      const stored = await prisma.invoice.findUnique({ where: { id: original.id } });
+      expect(stored?.paymentStatus).toBe("PAID");
+      expect(stored?.paidAt).not.toBeNull();
+
+      const summaryRes = mockRes();
+      await invoiceController.getUnpaidSummary(mockReq(userA.id), summaryRes);
+      expect((summaryRes.body as { count: number }).count).toBe(0);
+    });
+
+    it("a partial payment followed by a full-remaining credit note settles the invoice without double counting", async () => {
+      const original = await createInvoice(userA.id, { number: "ORIG-3", grossAmountCents: 10000 });
+      await invoiceController.recordPayment(mockReq(userA.id, { params: { id: original.id }, body: { amountCents: 4000 } }), mockRes());
+      await invoiceController.createCreditNote(
+        mockReq(userA.id, {
+          params: { id: original.id },
+          body: { number: "DB-1", issueDate: "2026-08-20", lines: [{ description: "Zvyšok dobropisom", quantity: 1, unitCode: "C62", unitPrice: 60, taxRatePercent: 0 }] },
+        }),
+        mockRes()
+      );
+      const stored = await prisma.invoice.findUnique({ where: { id: original.id } });
+      expect(stored?.paidAmountCents).toBe(4000); // untouched — only the derived status changes
+      expect(stored?.paymentStatus).toBe("PAID");
+    });
+
+    it("once fully credited, recordPayment rejects any further payment (the credited-aware cap)", async () => {
+      const original = await createInvoice(userA.id, { number: "ORIG-4", grossAmountCents: 10000 });
+      await invoiceController.createCreditNote(
+        mockReq(userA.id, { params: { id: original.id }, body: { number: "DB-1", issueDate: "2026-08-20" } }),
+        mockRes()
+      );
+      const res = mockRes();
+      await invoiceController.recordPayment(mockReq(userA.id, { params: { id: original.id }, body: { amountCents: 1 } }), res);
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("a partial credit note lowers recordPayment's cap by the credited amount", async () => {
+      const original = await createInvoice(userA.id, { number: "ORIG-5", grossAmountCents: 10000 });
+      await invoiceController.createCreditNote(
+        mockReq(userA.id, {
+          params: { id: original.id },
+          body: { number: "DB-1", issueDate: "2026-08-20", lines: [{ description: "Dobropis", quantity: 1, unitCode: "C62", unitPrice: 30, taxRatePercent: 0 }] },
+        }),
+        mockRes()
+      );
+      // 30 credited + 71 paid would exceed the 100 total by 1 cent.
+      const overRes = mockRes();
+      await invoiceController.recordPayment(mockReq(userA.id, { params: { id: original.id }, body: { amountCents: 7100 } }), overRes);
+      expect(overRes.statusCode).toBe(400);
+
+      const okRes = mockRes();
+      await invoiceController.recordPayment(mockReq(userA.id, { params: { id: original.id }, body: { amountCents: 7000 } }), okRes);
+      expect(okRes.statusCode).toBe(200);
+      expect((okRes.body as { paymentStatus: string }).paymentStatus).toBe("PAID");
+    });
+
+    // Two credit notes issued at nearly the same instant against the same invoice must not both
+    // read "nothing credited yet" and both pass the cap check — only one should be able to use
+    // up the invoice's full remaining amount.
+    it("two concurrent full-amount credit notes against the same invoice — only one succeeds", async () => {
+      const original = await createInvoice(userA.id, { number: "ORIG-RACE-1", grossAmountCents: 10000 });
+      const resA = mockRes();
+      const resB = mockRes();
+      await Promise.all([
+        invoiceController.createCreditNote(
+          mockReq(userA.id, { params: { id: original.id }, body: { number: "DB-RACE-A", issueDate: "2026-08-20" } }),
+          resA
+        ),
+        invoiceController.createCreditNote(
+          mockReq(userA.id, { params: { id: original.id }, body: { number: "DB-RACE-B", issueDate: "2026-08-20" } }),
+          resB
+        ),
+      ]);
+
+      const statuses = [resA.statusCode, resB.statusCode].sort();
+      expect(statuses).toEqual([201, 400]);
+
+      const totalCredited = await prisma.invoice.aggregate({
+        where: { originalInvoiceId: original.id, documentType: "CREDIT_NOTE" },
+        _sum: { grossAmountCents: true },
+      });
+      expect(totalCredited._sum.grossAmountCents).toBe(10000); // not 20000 — the loser never committed
+    });
+
+    it("PDF and email both state the same current balance after a partial payment and a partial credit note", async () => {
+      await createEmailSettings(userA.id);
+      const original = await createInvoice(userA.id, {
+        number: "ORIG-6",
+        grossAmountCents: 100000,
+        customerEmail: "odberatel@example.com",
+      });
+      await invoiceController.recordPayment(mockReq(userA.id, { params: { id: original.id }, body: { amountCents: 30000 } }), mockRes());
+      await invoiceController.createCreditNote(
+        mockReq(userA.id, {
+          params: { id: original.id },
+          body: { number: "DB-1", issueDate: "2026-08-20", lines: [{ description: "Dobropis", quantity: 1, unitCode: "C62", unitPrice: 200, taxRatePercent: 0 }] },
+        }),
+        mockRes()
+      );
+
+      const emailRes = mockRes();
+      await invoiceController.sendInvoiceEmail(mockReq(userA.id, { params: { id: original.id } }), emailRes);
+      expect(emailRes.statusCode).toBe(200);
+      expect(receivedEmails[receivedEmails.length - 1].text).toContain("500,00"); // 1000 - 300 paid - 200 credited
+
+      const pdfRes = mockRes();
+      await invoiceController.downloadInvoicePdf(mockReq(userA.id, { params: { id: original.id } }), pdfRes);
+      expect(pdfRes.statusCode).toBe(200);
+      if (hasPdftotext()) {
+        const text = extractPdfText(pdfRes.body as Buffer);
+        expect(text).toContain("500,00");
+      }
+    });
+  });
+
+  describe("recordPayment — concurrency (TOCTOU)", () => {
+    it("two concurrent payments racing for the last of the balance don't both succeed and overshoot the total", async () => {
+      const invoice = await createInvoice(userA.id, { number: "PAY-RACE-1", grossAmountCents: 10000 });
+      const resA = mockRes();
+      const resB = mockRes();
+      await Promise.all([
+        invoiceController.recordPayment(mockReq(userA.id, { params: { id: invoice.id }, body: { amountCents: 6000 } }), resA),
+        invoiceController.recordPayment(mockReq(userA.id, { params: { id: invoice.id }, body: { amountCents: 6000 } }), resB),
+      ]);
+
+      const statuses = [resA.statusCode, resB.statusCode].sort();
+      expect(statuses).toEqual([200, 400]); // one accepted (6000/10000), the other would overshoot to 12000
+
+      const stored = await prisma.invoice.findUnique({ where: { id: invoice.id } });
+      expect(stored?.paidAmountCents).toBe(6000); // not 12000 — no lost update, no overshoot
     });
   });
 

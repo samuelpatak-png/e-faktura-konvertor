@@ -97,4 +97,21 @@ describe("buildInvoiceTemplateVars", () => {
     expect(buildInvoiceTemplateVars(baseInvoice(), 2).reminderNumber).toBe("2");
     expect(buildInvoiceTemplateVars(baseInvoice()).reminderNumber).toBeUndefined();
   });
+
+  describe("creditedCents (3rd arg, defaults to 0)", () => {
+    it("reduces the stated amount by what's been credited, on top of what's been paid", () => {
+      const vars = buildInvoiceTemplateVars(baseInvoice({ grossAmountCents: 100000, paidAmountCents: 30000 }), undefined, 20000);
+      expect(vars.amount).toContain("500,00"); // 1000 - 300 paid - 200 credited
+    });
+
+    it("omitting it behaves exactly like the 2-arg form (backward compatible)", () => {
+      expect(buildInvoiceTemplateVars(baseInvoice()).amount).toBe(buildInvoiceTemplateVars(baseInvoice(), undefined, 0).amount);
+    });
+
+    it("floors at 0 instead of going negative if paid + credited somehow exceed gross", () => {
+      const vars = buildInvoiceTemplateVars(baseInvoice({ grossAmountCents: 10000, paidAmountCents: 6000 }), undefined, 6000);
+      expect(vars.amount).toContain("0,00");
+      expect(vars.amount).not.toContain("-");
+    });
+  });
 });

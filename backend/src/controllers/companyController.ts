@@ -1,5 +1,5 @@
 import type { Request, Response } from "express";
-import type { EmailSettings } from "@prisma/client";
+import type { CompanyProfile, EmailSettings } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { companyProfileSchema, sapiSkCredentialSchema, emailSettingsSchema, reminderSettingsSchema } from "../validators/schemas";
 import { encryptSecret } from "../lib/crypto";
@@ -57,14 +57,20 @@ function brandingDto(profile: { logoMimeType: string | null; stampMimeType: stri
   };
 }
 
+// Never send the base64 blobs anywhere a full CompanyProfile row is returned (this endpoint,
+// PUT /profile, and /auth/me's embedded companyProfile) — just whether each is set. Image
+// previews load from GET /company/branding/:asset (a plain <img src>, same-origin cookie auth)
+// instead. Exported so authController.me can shape its embedded companyProfile identically
+// rather than re-inventing a second stripping rule.
+export function profileDto(profile: CompanyProfile) {
+  const { logoData: _logoData, stampData: _stampData, signatureData: _signatureData, ...rest } = profile;
+  return { ...rest, ...brandingDto(profile) };
+}
+
 export async function getCompanyProfile(req: Request, res: Response) {
   const profile = await prisma.companyProfile.findUnique({ where: { userId: req.userId! } });
   if (!profile) return res.json(null);
-  // Never send the base64 blobs on the general profile fetch — just whether each is set.
-  // Image previews load from GET /company/branding/:asset (a plain <img src>, same-origin
-  // cookie auth) instead.
-  const { logoData: _logoData, stampData: _stampData, signatureData: _signatureData, ...rest } = profile;
-  res.json({ ...rest, ...brandingDto(profile) });
+  res.json(profileDto(profile));
 }
 
 export async function getBrandingAsset(req: Request, res: Response) {
@@ -90,7 +96,10 @@ export async function upsertCompanyProfile(req: Request, res: Response) {
     create: { userId: req.userId!, ...parsed.data },
     update: { ...parsed.data },
   });
-  res.json(profile);
+  // Same reason as getCompanyProfile: without this, a profile with branding uploaded already
+  // sent multi-MB base64 blobs back on every save, which the frontend would then hold in state
+  // and could re-submit on the *next* unrelated save, risking express.json's 2mb body limit.
+  res.json(profileDto(profile));
 }
 
 export async function getSapiSkStatus(req: Request, res: Response) {

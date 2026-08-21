@@ -63,7 +63,10 @@ export function ReceivedInvoiceDetailPage() {
   if (!invoice) return <FullPageSpinner />;
 
   const remainingCents = invoice.grossAmountCents - invoice.paidAmountCents;
-  const canRecordPayment = invoice.paymentStatus === "UNPAID" || invoice.paymentStatus === "PARTIALLY_PAID";
+  // A received credit note isn't something we owe money on — same rule the backend enforces
+  // (receivedInvoiceController.recordReceivedInvoicePayment restricts to documentType INVOICE).
+  const canRecordPayment =
+    invoice.documentType === "INVOICE" && (invoice.paymentStatus === "UNPAID" || invoice.paymentStatus === "PARTIALLY_PAID");
 
   return (
     <div className="flex flex-col gap-6">
@@ -143,34 +146,36 @@ export function ReceivedInvoiceDetailPage() {
         </CardBody>
       </Card>
 
-      <Card>
-        <CardHeader
-          title="Úhrada"
-          description={`Uhradené ${formatEur(centsToEur(invoice.paidAmountCents))} z ${formatEur(centsToEur(invoice.grossAmountCents))}${
-            invoice.paidAt ? ` · uhradené ${formatDate(invoice.paidAt)}` : ""
-          }`}
-        />
-        <CardBody className="flex flex-col gap-4">
-          {paymentError && <Alert tone="danger">{paymentError}</Alert>}
-          {canRecordPayment && (
-            <div className="flex flex-wrap items-end gap-3">
-              <Input
-                label="Zaznamenať úhradu (€)"
-                type="number"
-                min={0.01}
-                step="0.01"
-                value={paymentAmount}
-                onChange={(e) => setPaymentAmount(e.target.value)}
-                hint={`Zostáva uhradiť ${formatEur(centsToEur(remainingCents))}`}
-                className="max-w-[220px]"
-              />
-              <Button variant="secondary" loading={paymentBusy} onClick={handleRecordPayment}>
-                Zaznamenať úhradu
-              </Button>
-            </div>
-          )}
-        </CardBody>
-      </Card>
+      {invoice.documentType === "INVOICE" && (
+        <Card>
+          <CardHeader
+            title="Úhrada"
+            description={`Uhradené ${formatEur(centsToEur(invoice.paidAmountCents))} z ${formatEur(centsToEur(invoice.grossAmountCents))}${
+              invoice.paidAt ? ` · uhradené ${formatDate(invoice.paidAt)}` : ""
+            }`}
+          />
+          <CardBody className="flex flex-col gap-4">
+            {paymentError && <Alert tone="danger">{paymentError}</Alert>}
+            {canRecordPayment && (
+              <div className="flex flex-wrap items-end gap-3">
+                <Input
+                  label="Zaznamenať úhradu (€)"
+                  type="number"
+                  min={0.01}
+                  step="0.01"
+                  value={paymentAmount}
+                  onChange={(e) => setPaymentAmount(e.target.value)}
+                  hint={`Zostáva uhradiť ${formatEur(centsToEur(remainingCents))}`}
+                  className="max-w-[220px]"
+                />
+                <Button variant="secondary" loading={paymentBusy} onClick={handleRecordPayment}>
+                  Zaznamenať úhradu
+                </Button>
+              </div>
+            )}
+          </CardBody>
+        </Card>
+      )}
 
       <Card>
         <CardHeader title="Dodávateľ" />

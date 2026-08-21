@@ -40,6 +40,12 @@ export interface PdfInvoiceInput {
   grossAmountCents: number;
   taxBreakdown: TaxCategoryBreakdown[];
   prepaidAmountCents?: number;
+  // Current running balance — paidAmountCents already includes any prepaidAmountCents folded in
+  // at creation plus every later recordPayment; creditedCents is the sum of credit notes issued
+  // against this invoice. Both optional (default 0) so existing callers/tests that only care
+  // about the legal snapshot (prepaidAmountCents) keep working unchanged.
+  paidAmountCents?: number;
+  creditedCents?: number;
   originalInvoiceNumber?: string;
   // Raw UBL XML to embed as a PDF/A-3-style "Associated File" — the Factur-X/ZUGFeRD idea of
   // one file readable by both humans (this PDF's layout) and machines (the embedded XML). See
@@ -60,6 +66,19 @@ export function formatDateSk(iso: string | null): string {
   return `${d}.${m}.${y}`;
 }
 const formatDate = formatDateSk;
+
+/** Deterministic numeric fallback variable symbol for an invoice number with no digits at all
+ * (e.g. "FA-ABC") — a constant "0" would give every such invoice the identical VS, making it
+ * impossible for the supplier to tell which invoice a payment belongs to. Same input always
+ * produces the same output (so a re-downloaded PDF still matches), and different invoice
+ * numbers produce different symbols with high probability. */
+function numericFallbackSymbol(source: string): string {
+  let hash = 0;
+  for (let i = 0; i < source.length; i++) {
+    hash = (hash * 31 + source.charCodeAt(i)) >>> 0;
+  }
+  return String(hash).slice(0, 10);
+}
 
 function partyLines(party: PartyDetails): string[] {
   const lines = [party.name, party.street, `${party.postalCode} ${party.city}`, party.country];
@@ -221,7 +240,18 @@ export async function generateInvoicePdf(input: PdfInvoiceInput): Promise<Buffer
   l.y -= 15;
   l.line(totalsX, MARGIN + CONTENT_WIDTH);
   l.y -= 15;
-  const payableCents = input.grossAmountCents - (input.prepaidAmountCents ?? 0);
+  // "Na úhradu" reflects the CURRENT balance (paidAmountCents + creditedCents), not just the
+  // prepayment declared at creation — paidAmountCents already includes that prepayment plus any
+  // later recordPayment, so using prepaidAmountCents alone here (as before) kept showing the
+  // full original amount as still owed after a partial payment, which a customer could then
+  // overpay. The "Uhradený preddavok" line still shows the original prepayment on its own for
+  // context; "Ďalšia úhrada"/"Dobropisované" cover anything beyond it.
+  // max(), not paidAmountCents alone: the real pipeline (invoicePdfInput.ts) always folds any
+  // prepaidAmountCents into paidAmountCents already (see invoiceController.generateInvoice), so
+  // paidAmountCents alone is normally >= prepaidAmountCents — but a caller that only knows about
+  // a declared prepayment (and not yet any later paidAmountCents) must still see it reflected.
+  const settledCents = Math.min(input.grossAmountCents, Math.max(input.paidAmountCents ?? 0, input.prepaidAmountCents ?? 0) + (input.creditedCents ?? 0));
+  const payableCents = input.grossAmountCents - settledCents;
   l.text("Spolu s DPH", totalsX, 12, { bold: true });
   l.text(eur(input.grossAmountCents), totalsX + 120, 12, { bold: true });
   l.y -= 16;
@@ -229,6 +259,19 @@ export async function generateInvoicePdf(input: PdfInvoiceInput): Promise<Buffer
     l.text("Uhradený preddavok", totalsX, 10, { color: [0.35, 0.35, 0.35] });
     l.text(`-${eur(input.prepaidAmountCents)}`, totalsX + 120, 10, { color: [0.35, 0.35, 0.35] });
     l.y -= 15;
+  }
+  const paidBeyondPrepaidCents = Math.max(0, (input.paidAmountCents ?? 0) - (input.prepaidAmountCents ?? 0));
+  if (paidBeyondPrepaidCents > 0) {
+    l.text("Ďalšia úhrada", totalsX, 10, { color: [0.35, 0.35, 0.35] });
+    l.text(`-${eur(paidBeyondPrepaidCents)}`, totalsX + 120, 10, { color: [0.35, 0.35, 0.35] });
+    l.y -= 15;
+  }
+  if (input.creditedCents) {
+    l.text("Dobropisované", totalsX, 10, { color: [0.35, 0.35, 0.35] });
+    l.text(`-${eur(input.creditedCents)}`, totalsX + 120, 10, { color: [0.35, 0.35, 0.35] });
+    l.y -= 15;
+  }
+  if (settledCents > 0) {
     l.text("Na úhradu", totalsX, 12, { bold: true });
     l.text(eur(payableCents), totalsX + 120, 12, { bold: true });
     l.y -= 16;
@@ -247,7 +290,8 @@ export async function generateInvoicePdf(input: PdfInvoiceInput): Promise<Buffer
       l.text(`BIC/SWIFT: ${input.supplier.bic}`, MARGIN, 10);
       l.y -= 14;
     }
-    const variableSymbol = input.number.replace(/\D/g, "").slice(0, 10) || "0";
+    const digitsOnly = input.number.replace(/\D/g, "").slice(0, 10);
+    const variableSymbol = digitsOnly || numericFallbackSymbol(input.number);
     l.text(`Variabilný symbol: ${variableSymbol}`, MARGIN, 10);
     l.y -= 14;
     l.text(`Suma na úhradu: ${eur(payableCents)}`, MARGIN, 10, { bold: true });

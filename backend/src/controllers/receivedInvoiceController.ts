@@ -8,6 +8,17 @@ import { computePaymentStatus, isOverdue, daysOverdue } from "../services/paymen
 import { recordPaymentSchema } from "../validators/schemas";
 import { centsToEur } from "../services/invoiceMath";
 
+// Mirrors invoiceController.ts's InvoiceBusinessRuleError — thrown inside a prisma.$transaction
+// callback so a business-rule rejection aborts the transaction while still reaching the
+// controller's own catch with a specific status/message.
+class ReceivedInvoiceBusinessRuleError extends Error {
+  status: number;
+  constructor(message: string, status = 400) {
+    super(message);
+    this.status = status;
+  }
+}
+
 function toDto(inv: ReceivedInvoice) {
   return {
     id: inv.id,
@@ -128,24 +139,44 @@ export async function recordReceivedInvoicePayment(req: Request, res: Response) 
     return res.status(400).json({ error: "Neplatné údaje", details: parsed.error.flatten().fieldErrors });
   }
 
-  const invoice = await prisma.receivedInvoice.findFirst({ where: { id: req.params.id, userId: req.userId! } });
-  if (!invoice) return res.status(404).json({ error: "Faktúra nenájdená" });
-  if (invoice.paymentStatus === "CANCELLED") {
-    return res.status(400).json({ error: "Faktúra je označená ako stornovaná, nemožno na ňu zaznamenať úhradu" });
+  const existing = await prisma.receivedInvoice.findFirst({ where: { id: req.params.id, userId: req.userId! } });
+  if (!existing) return res.status(404).json({ error: "Faktúra nenájdená" });
+  // A received CREDIT_NOTE isn't itself something we owe money on — same rule as the outgoing
+  // side (invoiceController.recordPayment restricts to documentType INVOICE).
+  if (existing.documentType !== "INVOICE") {
+    return res.status(400).json({ error: "Úhradu možno zaznamenať len na prijatú faktúru, nie na dobropis." });
   }
 
-  const newPaidAmountCents = invoice.paidAmountCents + parsed.data.amountCents;
-  if (newPaidAmountCents > invoice.grossAmountCents) {
-    const remaining = centsToEur(invoice.grossAmountCents - invoice.paidAmountCents);
-    return res.status(400).json({ error: `Úhrada by presiahla sumu faktúry (zostáva uhradiť ${remaining.toFixed(2)} €)` });
-  }
+  try {
+    const updated = await prisma.$transaction(async (tx) => {
+      // Re-read inside the transaction — two concurrent payments on the same received invoice
+      // must not both compute their cap off the same pre-transaction paidAmountCents (a lost
+      // update). Same pattern as invoiceController.recordPayment.
+      const invoice = await tx.receivedInvoice.findFirst({ where: { id: req.params.id, userId: req.userId! } });
+      if (!invoice) throw new ReceivedInvoiceBusinessRuleError("Faktúra nenájdená", 404);
+      if (invoice.paymentStatus === "CANCELLED") {
+        throw new ReceivedInvoiceBusinessRuleError("Faktúra je označená ako stornovaná, nemožno na ňu zaznamenať úhradu");
+      }
 
-  const paymentStatus = computePaymentStatus(newPaidAmountCents, invoice.grossAmountCents);
-  const updated = await prisma.receivedInvoice.update({
-    where: { id: invoice.id },
-    data: { paidAmountCents: newPaidAmountCents, paymentStatus, paidAt: paymentStatus === "PAID" ? new Date() : invoice.paidAt },
-  });
-  res.json(toDto(updated));
+      const newPaidAmountCents = invoice.paidAmountCents + parsed.data.amountCents;
+      if (newPaidAmountCents > invoice.grossAmountCents) {
+        const remaining = centsToEur(invoice.grossAmountCents - invoice.paidAmountCents);
+        throw new ReceivedInvoiceBusinessRuleError(`Úhrada by presiahla sumu faktúry (zostáva uhradiť ${remaining.toFixed(2)} €)`);
+      }
+
+      const paymentStatus = computePaymentStatus(newPaidAmountCents, invoice.grossAmountCents);
+      return tx.receivedInvoice.update({
+        where: { id: invoice.id },
+        data: { paidAmountCents: newPaidAmountCents, paymentStatus, paidAt: paymentStatus === "PAID" ? new Date() : invoice.paidAt },
+      });
+    });
+    res.json(toDto(updated));
+  } catch (err) {
+    if (err instanceof ReceivedInvoiceBusinessRuleError) {
+      return res.status(err.status).json({ error: err.message });
+    }
+    throw err;
+  }
 }
 
 export async function deleteReceivedInvoice(req: Request, res: Response) {

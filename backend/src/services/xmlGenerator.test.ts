@@ -122,3 +122,53 @@ describe("generateInvoiceXml — WP4 additions", () => {
     expect(xml).toMatch(/<cbc:Note>Preddavok DP-2026-0001<\/cbc:Note>/);
   });
 });
+
+describe("generateInvoiceXml / generateCreditNoteXml — quantity formatting", () => {
+  const base = {
+    number: "2026-0002",
+    issueDate: "2026-08-20",
+    dueDate: "2026-09-03",
+    buyerReference: "OBJ-1",
+    currency: "EUR",
+    supplier,
+    customer,
+    netAmountCents: 10000,
+    taxAmountCents: 2300,
+    grossAmountCents: 12300,
+    taxBreakdown,
+  };
+
+  function lineWithQuantity(quantity: number): ComputedLine[] {
+    return [{ sortOrder: 0, description: "Položka", quantity, unitCode: "C62", unitPriceCents: 10000, taxRatePercent: 23, lineNetCents: 10000 }];
+  }
+
+  // Regression: quantity was previously written via String(quantity), which renders any binary
+  // floating-point noise verbatim (e.g. arithmetic like 0.1 + 0.2 or a value from before the
+  // Zod schema capped input to 3 decimals).
+  it("strips float noise instead of emitting it verbatim in InvoicedQuantity", () => {
+    const xml = generateInvoiceXml({ ...base, lines: lineWithQuantity(2.0000000000000004) });
+    expect(xml).toMatch(/<cbc:InvoicedQuantity unitCode="C62">2<\/cbc:InvoicedQuantity>/);
+  });
+
+  it("keeps a whole number clean (no trailing .000)", () => {
+    const xml = generateInvoiceXml({ ...base, lines: lineWithQuantity(3) });
+    expect(xml).toMatch(/<cbc:InvoicedQuantity unitCode="C62">3<\/cbc:InvoicedQuantity>/);
+  });
+
+  it("preserves a genuine fractional quantity", () => {
+    const xml = generateInvoiceXml({ ...base, lines: lineWithQuantity(1.5) });
+    expect(xml).toMatch(/<cbc:InvoicedQuantity unitCode="C62">1\.5<\/cbc:InvoicedQuantity>/);
+  });
+
+  it("does the same for a credit note's CreditedQuantity", () => {
+    const xml = generateCreditNoteXml({
+      ...base,
+      number: "DB-2026-0001",
+      issueDate: "2026-08-20",
+      originalInvoiceNumber: "2026-0001",
+      originalInvoiceIssueDate: "2026-08-01",
+      lines: lineWithQuantity(2.0000000000000004),
+    });
+    expect(xml).toMatch(/<cbc:CreditedQuantity unitCode="C62">2<\/cbc:CreditedQuantity>/);
+  });
+});

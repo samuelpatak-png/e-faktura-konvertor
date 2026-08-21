@@ -1,6 +1,6 @@
 import { prisma } from "../lib/prisma";
 import { decryptSecret } from "../lib/crypto";
-import { daysOverdue } from "./paymentStatus";
+import { daysOverdue, sumCreditedCents } from "./paymentStatus";
 import { sendEmail } from "./emailSender";
 import { renderTemplate, buildInvoiceTemplateVars } from "./emailTemplate";
 import { generateInvoicePdf } from "./pdfGenerator";
@@ -156,32 +156,50 @@ export async function sendReminderForInvoice(
   bodyTemplate: string,
   subjectTemplate: string
 ): Promise<{ success: boolean; error?: string }> {
-  const subjectForLog = renderTemplate(subjectTemplate, buildInvoiceTemplateVars(invoice, reminderNumber));
+  // Re-read fresh from the DB rather than trusting the passed-in `invoice` — collectDueReminders
+  // loads every due invoice once at the start of a tick and this function then sends them one at
+  // a time; if an earlier item in the same tick is slow (e.g. a laggy SMTP host), a payment or
+  // cancellation recorded via the API mid-tick must still be caught by the guards below, not
+  // just at the *next* hourly collectDueReminders query. sendReminderNow (manual send) already
+  // fetches fresh right before calling this, but re-fetching here too is one cheap indexed
+  // lookup and means the guard never depends on what a given caller happened to do.
+  const current = await prisma.invoice.findUnique({
+    where: { id: invoice.id },
+    include: { lines: { orderBy: { sortOrder: "asc" } }, corrections: { select: { grossAmountCents: true } } },
+  });
+  if (!current) {
+    // No delete-invoice endpoint exists today, so unreachable in practice — fails loudly rather
+    // than sending against stale data if that ever changes.
+    return { success: false, error: "Faktúra už neexistuje" };
+  }
 
-  if (invoice.paymentStatus === "PAID" || invoice.paymentStatus === "CANCELLED") {
-    const reason = `Faktúra je ${invoice.paymentStatus === "PAID" ? "uhradená" : "stornovaná"} — upomienka sa neposlala`;
-    await logFailedReminder(invoice, reminderNumber, subjectForLog, reason);
+  const creditedCents = sumCreditedCents(current.corrections);
+  const subjectForLog = renderTemplate(subjectTemplate, buildInvoiceTemplateVars(current, reminderNumber, creditedCents));
+
+  if (current.paymentStatus === "PAID" || current.paymentStatus === "CANCELLED") {
+    const reason = `Faktúra je ${current.paymentStatus === "PAID" ? "uhradená" : "stornovaná"} — upomienka sa neposlala`;
+    await logFailedReminder(current, reminderNumber, subjectForLog, reason);
     return { success: false, error: "Faktúra je uhradená alebo stornovaná — upomienka sa neposlala" };
   }
 
-  if (!invoice.customerEmail) {
-    await logFailedReminder(invoice, reminderNumber, subjectForLog, "Faktúra nemá email odberateľa");
+  if (!current.customerEmail) {
+    await logFailedReminder(current, reminderNumber, subjectForLog, "Faktúra nemá email odberateľa");
     return { success: false, error: "Faktúra nemá email odberateľa" };
   }
 
-  if (!invoice.xml) {
+  if (!current.xml) {
     // Matches the guard downloadInvoicePdf/sendInvoiceEmail already enforce (invoiceController.ts)
     // — unreachable via this app's own code today (every Invoice-creation path sets xml), but a
     // reminder must fail loudly here too rather than silently mail out a PDF with an empty
     // embedded-XML attachment if that ever stops being true.
-    await logFailedReminder(invoice, reminderNumber, subjectForLog, "Faktúra ešte nemá vygenerované XML");
+    await logFailedReminder(current, reminderNumber, subjectForLog, "Faktúra ešte nemá vygenerované XML");
     return { success: false, error: "Faktúra ešte nemá vygenerované XML" };
   }
 
   if (reminderNumber === 0) {
     const recentManualSend = await prisma.sentEmail.findFirst({
       where: {
-        invoiceId: invoice.id,
+        invoiceId: current.id,
         type: "REMINDER",
         reminderNumber: 0,
         status: "SENT",
@@ -190,27 +208,27 @@ export async function sendReminderForInvoice(
     });
     if (recentManualSend) {
       const error = "Upomienka bola nedávno odoslaná — počkaj chvíľu pred ďalším odoslaním.";
-      await logFailedReminder(invoice, reminderNumber, subjectForLog, error);
+      await logFailedReminder(current, reminderNumber, subjectForLog, error);
       return { success: false, error };
     }
   }
 
-  const emailSettings = await prisma.emailSettings.findUnique({ where: { userId: invoice.userId } });
+  const emailSettings = await prisma.emailSettings.findUnique({ where: { userId: current.userId } });
   if (!emailSettings) {
     // collectDueReminders already filters on this for the scheduler path, but sendReminderNow
     // (manual button) calls this function directly without going through collectDueReminders at
     // all, and settings could also have been deleted between collection and send.
     const error = "Najprv nastav SMTP v Nastaveniach.";
-    await logFailedReminder(invoice, reminderNumber, subjectForLog, error);
+    await logFailedReminder(current, reminderNumber, subjectForLog, error);
     return { success: false, error };
   }
 
-  const vars = buildInvoiceTemplateVars(invoice, reminderNumber);
+  const vars = buildInvoiceTemplateVars(current, reminderNumber, creditedCents);
   const subject = renderTemplate(subjectTemplate, vars);
   const body = renderTemplate(bodyTemplate, vars);
 
-  const profile = await prisma.companyProfile.findUnique({ where: { userId: invoice.userId } });
-  const pdf = await generateInvoicePdf(buildPdfInvoiceInput(invoice, profile));
+  const profile = await prisma.companyProfile.findUnique({ where: { userId: current.userId } });
+  const pdf = await generateInvoicePdf(buildPdfInvoiceInput(current, profile));
 
   const result = await sendEmail({
     smtp: {
@@ -222,22 +240,22 @@ export async function sendReminderForInvoice(
       fromEmail: emailSettings.fromEmail,
       fromName: emailSettings.fromName,
     },
-    to: invoice.customerEmail,
+    to: current.customerEmail,
     subject,
     text: body,
     attachments: [
-      { filename: `faktura_${invoice.number}.pdf`, content: pdf, contentType: "application/pdf" },
-      { filename: `faktura_${invoice.number}.xml`, content: Buffer.from(invoice.xml, "utf8"), contentType: "application/xml" },
+      { filename: `faktura_${current.number}.pdf`, content: pdf, contentType: "application/pdf" },
+      { filename: `faktura_${current.number}.xml`, content: Buffer.from(current.xml, "utf8"), contentType: "application/xml" },
     ],
   });
 
   await prisma.sentEmail.create({
     data: {
-      userId: invoice.userId,
-      invoiceId: invoice.id,
+      userId: current.userId,
+      invoiceId: current.id,
       type: "REMINDER",
       reminderNumber,
-      toEmail: invoice.customerEmail,
+      toEmail: current.customerEmail,
       subject,
       status: result.success ? "SENT" : "FAILED",
       errorMessage: result.error,

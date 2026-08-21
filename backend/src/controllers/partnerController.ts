@@ -75,6 +75,12 @@ export async function lookupPartnerByIco(req: Request, res: Response) {
   if (!/^\d{8}$/.test(ico)) {
     return res.status(400).json({ error: "IČO musí mať presne 8 číslic" });
   }
-  const data = await lookupByIco(ico);
-  res.json({ found: data !== null, data });
+  const result = await lookupByIco(ico);
+  if (result.status === "unavailable") {
+    // A non-2xx here (not `{found: false}`) is what makes the frontend's own "unavailable"
+    // state (distinct from "not found") actually reachable — see PartnerFormPage.tsx's
+    // handleLookup, whose catch block already existed for this but had nothing to catch before.
+    return res.status(503).json({ error: "Vyhľadávanie v registri momentálne nie je dostupné, skús to znova neskôr." });
+  }
+  res.json({ found: result.status === "found", data: result.status === "found" ? result.data : null });
 }

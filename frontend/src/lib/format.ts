@@ -20,6 +20,17 @@ export function centsToEur(cents: number): number {
   return cents / 100;
 }
 
+/** Local (not UTC) calendar date as YYYY-MM-DD. `Date.toISOString()` is always UTC, which reads
+ * a day behind the real local date between local midnight and UTC midnight — e.g. 00:30 in
+ * Bratislava during CEST is still 22:30 UTC the previous day. Used anywhere "today" needs to be
+ * a date-only value (defaulting a new invoice's issueDate, a credit note's issueDate). */
+export function toLocalIsoDate(d: Date): string {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 export const INVOICE_STATUS_LABELS: Record<string, string> = {
   DRAFT: "Koncept",
   GENERATED: "Vygenerovaná",

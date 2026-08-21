@@ -12,6 +12,7 @@ import {
   paymentStatusTone,
   PAYMENT_STATUS_LABELS,
   DOCUMENT_TYPE_LABELS,
+  toLocalIsoDate,
 } from "../lib/format";
 import { Card, CardBody, CardHeader } from "../components/ui/Card";
 import { Badge } from "../components/ui/Badge";
@@ -129,7 +130,7 @@ export function InvoiceDetailPage() {
     try {
       const result = await invoiceApi.createCreditNote(id, {
         number: creditNoteNumber.trim(),
-        issueDate: new Date().toISOString().slice(0, 10),
+        issueDate: toLocalIsoDate(new Date()),
         reason: creditNoteReason.trim() || undefined,
       });
       if (result.success && result.invoiceId) {
@@ -187,9 +188,12 @@ export function InvoiceDetailPage() {
   if (error) return <Alert tone="danger">{error}</Alert>;
   if (!invoice) return <FullPageSpinner />;
 
-  const remainingCents = invoice.grossAmountCents - invoice.paidAmountCents;
-  const canRecordPayment = invoice.paymentStatus === "UNPAID" || invoice.paymentStatus === "PARTIALLY_PAID";
   const creditedCents = invoice.corrections.reduce((sum, c) => sum + c.grossAmountCents, 0);
+  // Credit notes reduce what's still owed the same way a payment does — without this, "Zostáva
+  // uhradiť" kept showing the full gross-minus-paid figure even after the invoice had already
+  // been credited down (or fully settled via credit alone), which a customer could then overpay.
+  const remainingCents = Math.max(0, invoice.grossAmountCents - invoice.paidAmountCents - creditedCents);
+  const canRecordPayment = invoice.paymentStatus === "UNPAID" || invoice.paymentStatus === "PARTIALLY_PAID";
   const fullyCredited = creditedCents >= invoice.grossAmountCents;
 
   return (
@@ -210,7 +214,10 @@ export function InvoiceDetailPage() {
             )}
           </div>
           <p className="mt-1 text-sm text-ink-500">
-            Vystavená {formatDate(invoice.issueDate)} · Splatná {formatDate(invoice.dueDate)}
+            Vystavená {formatDate(invoice.issueDate)}
+            {/* dueDate is a non-meaningful placeholder (= issueDate) for anything but a plain
+                invoice — UBL CreditNoteType has no DueDate concept — so don't show a fake one. */}
+            {invoice.documentType === "INVOICE" && <> · Splatná {formatDate(invoice.dueDate)}</>}
             {invoice.overdue && <span className="ml-1 font-medium text-danger-600">· {invoice.daysOverdue} dní po splatnosti</span>}
           </p>
         </div>

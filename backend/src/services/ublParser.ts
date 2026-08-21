@@ -57,7 +57,15 @@ const parser = new XMLParser({
   parseTagValue: false,
   parseAttributeValue: false,
   trimValues: true,
-  isArray: (name) => ["cac:InvoiceLine", "cac:CreditNoteLine", "cac:TaxSubtotal"].includes(name),
+  // TaxTotal/PartyTaxScheme/PartyIdentification are usually singular but legally can repeat
+  // (e.g. a second cac:TaxTotal for a tax currency alongside the document currency — BG-13; a
+  // party can carry more than one PartyIdentification with different schemeIDs). Without being
+  // forced into an array even for the common single-occurrence case, fast-xml-parser only
+  // auto-arrays when it *actually* sees 2+ occurrences — so code reading these as a single node
+  // would work for every fixture we generate ourselves and then silently break on a real
+  // multi-occurrence document from someone else's system. firstOf() below always takes the
+  // first (document-currency / primary) one.
+  isArray: (name) => ["cac:InvoiceLine", "cac:CreditNoteLine", "cac:TaxSubtotal", "cac:TaxTotal", "cac:PartyTaxScheme", "cac:PartyIdentification"].includes(name),
 });
 
 type Node = string | number | boolean | { [key: string]: Node } | undefined | null;
@@ -92,16 +100,36 @@ function child(node: Node, key: string): Node {
   return undefined;
 }
 
+/** Picks the first element out of a node that `isArray` may have forced into an array (or that
+ * fast-xml-parser auto-arrayed because the source XML actually repeated the tag) — the element
+ * itself, unchanged, when it wasn't an array to begin with. */
+function firstOf(node: Node): Node {
+  return Array.isArray(node) ? node[0] : node;
+}
+
+/** Finds a root-level child by local name, ignoring any namespace prefix (e.g. matches both
+ * `Invoice` and a prefixed `ns3:Invoice` — some senders/APs prefix the default namespace). */
+function findByLocalName(node: Node, localName: string): Node {
+  if (!node || typeof node !== "object") return undefined;
+  for (const key of Object.keys(node as Record<string, Node>)) {
+    const bareName = key.includes(":") ? key.slice(key.indexOf(":") + 1) : key;
+    if (bareName === localName) return (node as Record<string, Node>)[key];
+  }
+  return undefined;
+}
+
 function parseParty(partyWrapper: Node): ParsedParty {
   const party = child(partyWrapper, "cac:Party");
   const legalEntity = child(party, "cac:PartyLegalEntity");
-  const taxScheme = child(party, "cac:PartyTaxScheme");
+  // firstOf: a party can legally carry more than one PartyTaxScheme/PartyIdentification (see
+  // the isArray comment above) — we only ever need the primary one of each.
+  const taxScheme = firstOf(child(party, "cac:PartyTaxScheme"));
   const address = child(party, "cac:PostalAddress");
   const partyName = text(child(child(party, "cac:PartyName"), "cbc:Name")) ?? text(child(legalEntity, "cbc:RegistrationName"));
 
   // DIČ / Peppol participant ID: real-world senders use either PartyIdentification/ID or
   // EndpointID for this — both are seen in practice, so try both rather than assuming ours.
-  const partyId = text(child(child(party, "cac:PartyIdentification"), "cbc:ID")) ?? text(child(party, "cbc:EndpointID"));
+  const partyId = text(child(firstOf(child(party, "cac:PartyIdentification")), "cbc:ID")) ?? text(child(party, "cbc:EndpointID"));
 
   return {
     name: partyName ?? "(neznámy názov)",
@@ -156,8 +184,11 @@ export function parseUblDocument(xmlContent: string): ParsedUblDocument {
     throw new UblParseError(`Neplatné alebo poškodené XML: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  const invoice = child(root, "Invoice");
-  const creditNote = child(root, "CreditNote");
+  // findByLocalName, not a bare child() lookup — some senders/APs emit a namespace-prefixed
+  // root (e.g. <ns3:Invoice>), which a plain "Invoice" key lookup would miss entirely and
+  // reject as "not a valid UBL document" despite being one.
+  const invoice = findByLocalName(root, "Invoice");
+  const creditNote = findByLocalName(root, "CreditNote");
   if (!invoice && !creditNote) {
     throw new UblParseError("Súbor nie je platný UBL dokument — chýba koreňový element <Invoice> alebo <CreditNote>.");
   }
@@ -176,7 +207,10 @@ export function parseUblDocument(xmlContent: string): ParsedUblDocument {
   const lineNodes = Array.isArray(lineNodesRaw) ? lineNodesRaw : lineNodesRaw !== undefined ? [lineNodesRaw] : [];
 
   const monetaryTotal = child(doc, "cac:LegalMonetaryTotal");
-  const taxTotal = child(doc, "cac:TaxTotal");
+  // firstOf: a document can carry a second cac:TaxTotal for a tax currency alongside the
+  // document currency (BG-13) — the first is always the document-currency one (the one whose
+  // TaxAmount belongs with netAmountCents/grossAmountCents below).
+  const taxTotal = firstOf(child(doc, "cac:TaxTotal"));
 
   return {
     documentType,
@@ -190,6 +224,11 @@ export function parseUblDocument(xmlContent: string): ParsedUblDocument {
     lines: parseLines(lineNodes, quantityField),
     netAmountCents: eurToCents(num(child(monetaryTotal, "cbc:LineExtensionAmount")) ?? 0),
     taxAmountCents: eurToCents(num(child(taxTotal, "cbc:TaxAmount")) ?? 0),
-    grossAmountCents: eurToCents(num(child(monetaryTotal, "cbc:PayableAmount")) ?? num(child(monetaryTotal, "cbc:TaxInclusiveAmount")) ?? 0),
+    // TaxInclusiveAmount (the full document total, BT-112) — not PayableAmount, which is
+    // TaxInclusiveAmount minus any PrepaidAmount (BT-115) and so is *smaller* whenever a
+    // prepayment is declared. grossAmountCents here must equal netAmountCents + taxAmountCents
+    // for our own cross-checks (receivedInvoiceValidator.ts) to reconcile; PayableAmount elsewhere
+    // means something different ("what's left to pay"), not "the document's total".
+    grossAmountCents: eurToCents(num(child(monetaryTotal, "cbc:TaxInclusiveAmount")) ?? num(child(monetaryTotal, "cbc:PayableAmount")) ?? 0),
   };
 }

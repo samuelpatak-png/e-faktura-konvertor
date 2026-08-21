@@ -9,13 +9,27 @@ import { generateInvoicePdf } from "../services/pdfGenerator";
 import { buildPdfInvoiceInput } from "../services/invoicePdfInput";
 import { decryptSecret } from "../lib/crypto";
 import { sendInvoiceViaSapiSk } from "../services/sapiSkClient";
-import { computePaymentStatus, isOverdue, daysOverdue, agingBucket } from "../services/paymentStatus";
+import { computePaymentStatus, isOverdue, daysOverdue, agingBucket, sumCreditedCents } from "../services/paymentStatus";
 import { sendEmail } from "../services/emailSender";
 import { renderTemplate, buildInvoiceTemplateVars } from "../services/emailTemplate";
 import { sendReminderForInvoice } from "../services/reminderScheduler";
 
 async function loadSupplier(userId: string) {
   return prisma.companyProfile.findUnique({ where: { userId } });
+}
+
+// Thrown from inside a prisma.$transaction callback to signal "this is a 4xx, not a crash" —
+// mirrors ublParser.ts's UblParseError. Needed because a business-rule rejection (e.g. an
+// overpayment/over-credit cap, discovered only after re-reading fresh state inside the
+// transaction) has to abort the transaction (so nothing is written) while still reaching the
+// controller's own catch block with a specific status/message, not the generic 500 an
+// unrecognized throw would produce.
+class InvoiceBusinessRuleError extends Error {
+  status: number;
+  constructor(message: string, status = 400) {
+    super(message);
+    this.status = status;
+  }
 }
 
 function buildXml(data: InvoiceInput, supplier: CompanyProfile, totals: ComputedInvoiceTotals) {
@@ -63,7 +77,13 @@ function validate(data: InvoiceInput, supplier: CompanyProfile, totals: Computed
   });
 }
 
-function paymentFields(invoice: Pick<Invoice, "dueDate" | "paymentStatus">) {
+// dueDate is only a real date for documentType INVOICE — a CREDIT_NOTE's dueDate column holds
+// a non-meaningful placeholder (issueDate, see createCreditNote), so "overdue"/"daysOverdue"
+// would otherwise flag freshly-issued credit notes as overdue for no reason.
+function paymentFields(invoice: Pick<Invoice, "dueDate" | "paymentStatus" | "documentType">) {
+  if (invoice.documentType !== "INVOICE") {
+    return { overdue: false, daysOverdue: 0 };
+  }
   return {
     overdue: isOverdue(invoice.dueDate, invoice.paymentStatus),
     daysOverdue: daysOverdue(invoice.dueDate),
@@ -94,6 +114,14 @@ export async function validateInvoice(req: Request, res: Response) {
   }
 
   const totals = computeInvoiceTotals(parsed.data);
+
+  if (parsed.data.prepaidAmountCents && parsed.data.prepaidAmountCents > totals.grossAmountCents) {
+    // Same cap /invoice/generate enforces below — without it, /validate would show a "valid"
+    // preview (and XML) for an invoice /generate would then reject, or worse, an XML with a
+    // negative PayableAmount if the caller skipped straight to /generate's own check.
+    return res.status(400).json({ valid: false, errors: ["Uhradený preddavok nemôže presiahnuť sumu faktúry."], warnings: [] });
+  }
+
   const result = validate(parsed.data, supplier, totals);
 
   // XML preview only — nothing is persisted here. Regenerated (and saved) again on /generate,
@@ -135,7 +163,12 @@ export async function generateInvoice(req: Request, res: Response) {
   }
 
   const xml = buildXml(data, supplier, totals);
-  const paidAmountCents = data.prepaidAmountCents ?? 0;
+  // A 386 ("daňový doklad k prijatej platbe") IS the document confirming a payment was
+  // received — its own amount is the advance, so it's settled in full the moment it's issued
+  // (the schema refuses isAdvanceTaxDocument + prepaidAmountCents together, see schemas.ts, so
+  // there's no other "already paid" figure to use here). Without this, a 386 sat UNPAID forever
+  // and could show up as overdue.
+  const paidAmountCents = data.isAdvanceTaxDocument ? totals.grossAmountCents : (data.prepaidAmountCents ?? 0);
 
   try {
     const invoice = await prisma.invoice.create({
@@ -259,6 +292,7 @@ export async function downloadInvoicePdf(req: Request, res: Response) {
     include: {
       lines: { orderBy: { sortOrder: "asc" } },
       original: { select: { number: true } },
+      corrections: { select: { grossAmountCents: true } },
     },
   });
   if (!invoice || !invoice.xml) return res.status(404).json({ error: "Faktúra nenájdená" });
@@ -288,6 +322,7 @@ export async function sendInvoiceViaSapi(req: Request, res: Response) {
     senderParticipantId: `0245:${invoice.supplierDic}`,
     receiverParticipantId: `0245:${invoice.customerDic}`,
     documentId: invoice.number,
+    documentType: invoice.documentType,
     xml: invoice.xml,
   });
 
@@ -309,38 +344,60 @@ export async function recordPayment(req: Request, res: Response) {
     return res.status(400).json({ error: "Neplatné údaje", details: parsed.error.flatten().fieldErrors });
   }
 
-  const invoice = await prisma.invoice.findFirst({ where: { id: req.params.id, userId: req.userId! } });
-  if (!invoice) return res.status(404).json({ error: "Faktúra nenájdená" });
-
-  if (invoice.documentType !== "INVOICE") {
+  const existing = await prisma.invoice.findFirst({ where: { id: req.params.id, userId: req.userId! } });
+  if (!existing) return res.status(404).json({ error: "Faktúra nenájdená" });
+  if (existing.documentType !== "INVOICE") {
     return res.status(400).json({ error: "Úhradu možno zaznamenať len na bežnú faktúru." });
   }
-  if (invoice.paymentStatus === "CANCELLED") {
-    return res.status(400).json({ error: "Faktúra je stornovaná, nemožno na ňu zaznamenať úhradu" });
+
+  try {
+    const updated = await prisma.$transaction(async (tx) => {
+      // Re-read fresh inside the transaction rather than reusing `existing` above — two
+      // concurrent payments on the same invoice must not both compute their cap off the same
+      // pre-transaction paidAmountCents and both pass (a lost update). SQLite serializes
+      // concurrent write transactions, so this re-read is guaranteed to see any payment (or
+      // credit note, via `corrections`) committed by a transaction that finished first.
+      const invoice = await tx.invoice.findFirst({
+        where: { id: req.params.id, userId: req.userId! },
+        include: { corrections: { select: { grossAmountCents: true } } },
+      });
+      if (!invoice) throw new InvoiceBusinessRuleError("Faktúra nenájdená", 404);
+      if (invoice.paymentStatus === "CANCELLED") {
+        throw new InvoiceBusinessRuleError("Faktúra je stornovaná, nemožno na ňu zaznamenať úhradu");
+      }
+
+      const creditedCents = sumCreditedCents(invoice.corrections);
+      const newPaidAmountCents = invoice.paidAmountCents + parsed.data.amountCents;
+      if (newPaidAmountCents + creditedCents > invoice.grossAmountCents) {
+        // Overpayment is rejected outright rather than accepted as a credit balance — see WP3
+        // handoff for the reasoning (a real credit-balance ledger is out of scope here). What's
+        // already been credited away counts against the same cap as cash paid.
+        const remaining = centsToEur(Math.max(0, invoice.grossAmountCents - invoice.paidAmountCents - creditedCents));
+        throw new InvoiceBusinessRuleError(`Úhrada by presiahla sumu faktúry (zostáva uhradiť ${remaining.toFixed(2)} €)`);
+      }
+
+      const paymentStatus = computePaymentStatus(newPaidAmountCents, invoice.grossAmountCents, creditedCents);
+      return tx.invoice.update({
+        where: { id: invoice.id },
+        data: {
+          paidAmountCents: newPaidAmountCents,
+          paymentStatus,
+          paidAt: paymentStatus === "PAID" ? new Date() : invoice.paidAt,
+        },
+        // The frontend re-renders the full invoice detail from this response — it needs the
+        // same shape getInvoice returns (lines + corrections), or InvoiceDetailPage's own
+        // creditedCents computation crashes on `invoice.corrections.reduce(...)`.
+        include: { lines: { orderBy: { sortOrder: "asc" } }, corrections: { select: { id: true, number: true, issueDate: true, grossAmountCents: true } } },
+      });
+    });
+
+    res.json({ ...updated, ...paymentFields(updated) });
+  } catch (err) {
+    if (err instanceof InvoiceBusinessRuleError) {
+      return res.status(err.status).json({ error: err.message });
+    }
+    throw err;
   }
-
-  const newPaidAmountCents = invoice.paidAmountCents + parsed.data.amountCents;
-  if (newPaidAmountCents > invoice.grossAmountCents) {
-    // Overpayment is rejected outright rather than accepted as a credit balance — see WP3
-    // handoff for the reasoning (a real credit-balance ledger is out of scope here).
-    const remaining = centsToEur(invoice.grossAmountCents - invoice.paidAmountCents);
-    return res.status(400).json({ error: `Úhrada by presiahla sumu faktúry (zostáva uhradiť ${remaining.toFixed(2)} €)` });
-  }
-
-  const paymentStatus = computePaymentStatus(newPaidAmountCents, invoice.grossAmountCents);
-  const updated = await prisma.invoice.update({
-    where: { id: invoice.id },
-    data: {
-      paidAmountCents: newPaidAmountCents,
-      paymentStatus,
-      paidAt: paymentStatus === "PAID" ? new Date() : invoice.paidAt,
-    },
-    // The frontend re-renders the full invoice detail (including line items) from this
-    // response — omitting `lines` here previously crashed that page after recording a payment.
-    include: { lines: { orderBy: { sortOrder: "asc" } } },
-  });
-
-  res.json({ ...updated, ...paymentFields(updated) });
 }
 
 export async function cancelInvoice(req: Request, res: Response) {
@@ -360,7 +417,8 @@ export async function cancelInvoice(req: Request, res: Response) {
   const updated = await prisma.invoice.update({
     where: { id: invoice.id },
     data: { paymentStatus: "CANCELLED" },
-    include: { lines: { orderBy: { sortOrder: "asc" } } },
+    // Same shape as getInvoice/recordPayment — see recordPayment's comment above.
+    include: { lines: { orderBy: { sortOrder: "asc" } }, corrections: { select: { id: true, number: true, issueDate: true, grossAmountCents: true } } },
   });
   res.json({ ...updated, ...paymentFields(updated) });
 }
@@ -371,7 +429,17 @@ export async function getUnpaidSummary(req: Request, res: Response) {
     // receivable in the "money someone still owes me for a delivery" sense this dashboard
     // tracks (see WP4 handoff).
     where: { userId: req.userId!, documentType: "INVOICE", paymentStatus: { in: ["UNPAID", "PARTIALLY_PAID"] } },
-    select: { id: true, number: true, customerName: true, dueDate: true, grossAmountCents: true, paidAmountCents: true },
+    select: {
+      id: true,
+      number: true,
+      customerName: true,
+      dueDate: true,
+      grossAmountCents: true,
+      paidAmountCents: true,
+      // Batched via one IN-query by Prisma, not per-invoice — same "no N+1" convention as
+      // reminderScheduler.collectDueReminders (see its handoff comment).
+      corrections: { select: { grossAmountCents: true } },
+    },
   });
 
   const buckets = {
@@ -383,7 +451,7 @@ export async function getUnpaidSummary(req: Request, res: Response) {
   let totalOutstandingCents = 0;
 
   for (const inv of invoices) {
-    const outstandingCents = inv.grossAmountCents - inv.paidAmountCents;
+    const outstandingCents = Math.max(0, inv.grossAmountCents - inv.paidAmountCents - sumCreditedCents(inv.corrections));
     totalOutstandingCents += outstandingCents;
     const bucket = buckets[agingBucket(daysOverdue(inv.dueDate))];
     bucket.count += 1;
@@ -423,19 +491,6 @@ export async function createCreditNote(req: Request, res: Response) {
   }));
 
   const totals = computeInvoiceTotals({ lines: lineInputs });
-
-  const alreadyCreditedCents = await prisma.invoice.aggregate({
-    where: { userId: req.userId!, documentType: "CREDIT_NOTE", originalInvoiceId: original.id },
-    _sum: { grossAmountCents: true },
-  });
-  const creditedSoFar = alreadyCreditedCents._sum.grossAmountCents ?? 0;
-  if (creditedSoFar + totals.grossAmountCents > original.grossAmountCents) {
-    const remaining = centsToEur(original.grossAmountCents - creditedSoFar);
-    return res.status(400).json({
-      success: false,
-      errors: [`Súčet dobropisov by presiahol sumu pôvodnej faktúry (zostáva možné dobropisovať ${remaining.toFixed(2)} €).`],
-    });
-  }
 
   const buyerReference = data.buyerReference ?? original.buyerReference;
 
@@ -492,56 +547,96 @@ export async function createCreditNote(req: Request, res: Response) {
   });
 
   try {
-    const creditNote = await prisma.invoice.create({
-      data: {
-        userId: req.userId!,
-        number: data.number,
-        issueDate: data.issueDate,
-        dueDate: data.issueDate, // CreditNoteType has no DueDate concept in UBL — see WP4 handoff
-        buyerReference,
-        currency: original.currency,
-        status: "GENERATED",
-        documentType: "CREDIT_NOTE",
-        originalInvoiceId: original.id,
-        supplierName: original.supplierName,
-        supplierIco: original.supplierIco,
-        supplierDic: original.supplierDic,
-        supplierIcDph: original.supplierIcDph,
-        supplierStreet: original.supplierStreet,
-        supplierCity: original.supplierCity,
-        supplierPostalCode: original.supplierPostalCode,
-        supplierCountry: original.supplierCountry,
-        supplierIban: original.supplierIban,
-        supplierBic: original.supplierBic,
-        customerName: original.customerName,
-        customerIco: original.customerIco,
-        customerDic: original.customerDic,
-        customerIcDph: original.customerIcDph,
-        customerStreet: original.customerStreet,
-        customerCity: original.customerCity,
-        customerPostalCode: original.customerPostalCode,
-        customerCountry: original.customerCountry,
-        customerEmail: original.customerEmail,
-        netAmountCents: totals.netAmountCents,
-        taxAmountCents: totals.taxAmountCents,
-        grossAmountCents: totals.grossAmountCents,
-        xml,
-        lines: {
-          create: totals.lines.map((l) => ({
-            sortOrder: l.sortOrder,
-            description: l.description,
-            quantity: l.quantity,
-            unitCode: l.unitCode,
-            unitPriceCents: l.unitPriceCents,
-            taxRatePercent: l.taxRatePercent,
-            lineNetCents: l.lineNetCents,
-          })),
+    // Aggregate-then-write in one transaction so two credit notes issued against the same
+    // invoice at nearly the same time can't both read "creditedSoFar" before either has
+    // committed and both pass the cap check (SQLite serializes concurrent write transactions,
+    // so the second one's re-read here is guaranteed to see the first one's completed write —
+    // see reminderScheduler.test.ts-style concurrency tests for the equivalent pattern).
+    const creditNote = await prisma.$transaction(async (tx) => {
+      const alreadyCreditedCents = await tx.invoice.aggregate({
+        where: { userId: req.userId!, documentType: "CREDIT_NOTE", originalInvoiceId: original.id },
+        _sum: { grossAmountCents: true },
+      });
+      const creditedSoFar = alreadyCreditedCents._sum.grossAmountCents ?? 0;
+      const totalCreditedCents = creditedSoFar + totals.grossAmountCents;
+      if (totalCreditedCents > original.grossAmountCents) {
+        const remaining = centsToEur(original.grossAmountCents - creditedSoFar);
+        throw new InvoiceBusinessRuleError(
+          `Súčet dobropisov by presiahol sumu pôvodnej faktúry (zostáva možné dobropisovať ${remaining.toFixed(2)} €).`
+        );
+      }
+
+      const created = await tx.invoice.create({
+        data: {
+          userId: req.userId!,
+          number: data.number,
+          issueDate: data.issueDate,
+          dueDate: data.issueDate, // CreditNoteType has no DueDate concept in UBL — see WP4 handoff
+          buyerReference,
+          currency: original.currency,
+          status: "GENERATED",
+          documentType: "CREDIT_NOTE",
+          originalInvoiceId: original.id,
+          supplierName: original.supplierName,
+          supplierIco: original.supplierIco,
+          supplierDic: original.supplierDic,
+          supplierIcDph: original.supplierIcDph,
+          supplierStreet: original.supplierStreet,
+          supplierCity: original.supplierCity,
+          supplierPostalCode: original.supplierPostalCode,
+          supplierCountry: original.supplierCountry,
+          supplierIban: original.supplierIban,
+          supplierBic: original.supplierBic,
+          customerName: original.customerName,
+          customerIco: original.customerIco,
+          customerDic: original.customerDic,
+          customerIcDph: original.customerIcDph,
+          customerStreet: original.customerStreet,
+          customerCity: original.customerCity,
+          customerPostalCode: original.customerPostalCode,
+          customerCountry: original.customerCountry,
+          customerEmail: original.customerEmail,
+          netAmountCents: totals.netAmountCents,
+          taxAmountCents: totals.taxAmountCents,
+          grossAmountCents: totals.grossAmountCents,
+          xml,
+          lines: {
+            create: totals.lines.map((l) => ({
+              sortOrder: l.sortOrder,
+              description: l.description,
+              quantity: l.quantity,
+              unitCode: l.unitCode,
+              unitPriceCents: l.unitPriceCents,
+              taxRatePercent: l.taxRatePercent,
+              lineNetCents: l.lineNetCents,
+            })),
+          },
         },
-      },
+      });
+
+      // The original's own paidAmountCents is never touched by a credit note (it tracks actual
+      // cash received, see recordPayment) — only its derived paymentStatus, which now also
+      // accounts for what's been credited away. Every other reader of "is this invoice still
+      // owed" (getUnpaidSummary, recordPayment's cap, the reminder scheduler) goes through this
+      // same persisted status, so a fully-credited invoice is consistently treated as settled
+      // everywhere without each of them re-deriving the credited total themselves.
+      const newStatus = computePaymentStatus(original.paidAmountCents, original.grossAmountCents, totalCreditedCents);
+      await tx.invoice.update({
+        where: { id: original.id },
+        data: {
+          paymentStatus: newStatus,
+          paidAt: newStatus === "PAID" && !original.paidAt ? new Date() : original.paidAt,
+        },
+      });
+
+      return created;
     });
 
     res.status(201).json({ success: true, invoiceId: creditNote.id, xml, validation, summary: summaryFromTotals(totals) });
   } catch (err: any) {
+    if (err instanceof InvoiceBusinessRuleError) {
+      return res.status(400).json({ success: false, errors: [err.message] });
+    }
     if (err.code === "P2002") {
       return res.status(409).json({ success: false, errors: [`Doklad s číslom "${data.number}" už existuje.`] });
     }
@@ -560,7 +655,11 @@ export async function sendInvoiceEmail(req: Request, res: Response) {
 
   const invoice = await prisma.invoice.findFirst({
     where: { id: req.params.id, userId: req.userId! },
-    include: { lines: { orderBy: { sortOrder: "asc" } }, original: { select: { number: true } } },
+    include: {
+      lines: { orderBy: { sortOrder: "asc" } },
+      original: { select: { number: true } },
+      corrections: { select: { grossAmountCents: true } },
+    },
   });
   if (!invoice || !invoice.xml) return res.status(404).json({ success: false, errors: ["Faktúra nenájdená"] });
 
@@ -577,7 +676,7 @@ export async function sendInvoiceEmail(req: Request, res: Response) {
   const profile = await prisma.companyProfile.findUnique({ where: { userId: req.userId! } });
   const pdf = await generateInvoicePdf(buildPdfInvoiceInput(invoice, profile));
 
-  const vars = buildInvoiceTemplateVars(invoice);
+  const vars = buildInvoiceTemplateVars(invoice, undefined, sumCreditedCents(invoice.corrections));
   const subject = renderTemplate(emailSettings.subjectTemplate, vars);
   const body = renderTemplate(emailSettings.bodyTemplate, vars);
 
