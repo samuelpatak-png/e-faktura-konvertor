@@ -90,6 +90,12 @@ describe("partnerSchema", () => {
     expect(partnerSchema.safeParse({ ...validPartner, email: "not-an-email" }).success).toBe(false);
   });
 
+  it("lowercases a mixed-case email — intentional, consistent with User/customer email normalization elsewhere", () => {
+    const result = partnerSchema.safeParse({ ...validPartner, email: "Jan.Novak@MojaFirma.SK" });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.email).toBe("jan.novak@mojafirma.sk");
+  });
+
   it("rejects an IČO that isn't exactly 8 digits", () => {
     expect(partnerSchema.safeParse({ ...validPartner, ico: "123" }).success).toBe(false);
   });
@@ -180,8 +186,8 @@ describe("emailSettingsSchema", () => {
     expect(emailSettingsSchema.safeParse({ ...validEmailSettings, fromEmail: "not-an-email" }).success).toBe(false);
   });
 
-  it("rejects an empty SMTP password", () => {
-    expect(emailSettingsSchema.safeParse({ ...validEmailSettings, smtpPassword: "" }).success).toBe(false);
+  it("accepts an empty SMTP password — it means \"keep the existing one\", enforced as required only in the controller on first save", () => {
+    expect(emailSettingsSchema.safeParse({ ...validEmailSettings, smtpPassword: "" }).success).toBe(true);
   });
 
   it("rejects an empty subject or body template", () => {

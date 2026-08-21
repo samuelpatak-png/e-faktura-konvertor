@@ -117,6 +117,8 @@ describe("reminder scheduler (DB-integrated, real local SMTP server)", () => {
       customerEmail: string | null;
       number: string;
       grossAmountCents: number;
+      paidAmountCents: number;
+      xml: string | null;
     }> = {}
   ) {
     return prisma.invoice.create({
@@ -130,6 +132,7 @@ describe("reminder scheduler (DB-integrated, real local SMTP server)", () => {
         status: "GENERATED",
         documentType: "INVOICE",
         paymentStatus: overrides.paymentStatus ?? "UNPAID",
+        paidAmountCents: overrides.paidAmountCents ?? 0,
         customerEmail: overrides.customerEmail !== undefined ? overrides.customerEmail : "odberatel@example.com",
         supplierName: "Dodávateľ s.r.o.",
         supplierIco: "11111111",
@@ -148,7 +151,7 @@ describe("reminder scheduler (DB-integrated, real local SMTP server)", () => {
         netAmountCents: 10000,
         taxAmountCents: 0,
         grossAmountCents: overrides.grossAmountCents ?? 10000,
-        xml: "<Invoice><cbc:ID>2026-0001</cbc:ID></Invoice>",
+        xml: overrides.xml !== undefined ? overrides.xml : "<Invoice><cbc:ID>2026-0001</cbc:ID></Invoice>",
         lines: {
           create: [
             { sortOrder: 0, description: "Položka", quantity: 1, unitCode: "C62", unitPriceCents: 10000, taxRatePercent: 0, lineNetCents: 10000 },
@@ -286,10 +289,10 @@ describe("reminder scheduler (DB-integrated, real local SMTP server)", () => {
 
   it("sendReminderForInvoice sends correctly when called directly with a valid invoice", async () => {
     const user = await createUser("a@example.com");
-    const emailSettings = await createEmailSettings(user.id);
+    await createEmailSettings(user.id);
     const invoice = await createInvoice(user.id, { dueDate: "2026-08-20" });
 
-    const result = await sendReminderForInvoice(invoice, emailSettings, 1, "Text {{invoiceNumber}}", "Subj {{invoiceNumber}}");
+    const result = await sendReminderForInvoice(invoice, 1, "Text {{invoiceNumber}}", "Subj {{invoiceNumber}}");
     expect(result.success).toBe(true);
     expect(received).toHaveLength(1);
     expect(received[0].subject).toBe("Subj 2026-0001");
@@ -297,14 +300,151 @@ describe("reminder scheduler (DB-integrated, real local SMTP server)", () => {
 
   it("sendReminderForInvoice refuses a PAID invoice even when called directly, bypassing the scheduler's own query filter — this is the defense-in-depth guard, not the query filter tested above", async () => {
     const user = await createUser("a@example.com");
-    const emailSettings = await createEmailSettings(user.id);
+    await createEmailSettings(user.id);
     const invoice = await createInvoice(user.id, { dueDate: "2026-08-20", paymentStatus: "PAID" });
 
-    const result = await sendReminderForInvoice(invoice, emailSettings, 1, "Text {{invoiceNumber}}", "Subj {{invoiceNumber}}");
+    const result = await sendReminderForInvoice(invoice, 1, "Text {{invoiceNumber}}", "Subj {{invoiceNumber}}");
     expect(result.success).toBe(false);
     expect(received).toHaveLength(0);
     const logged = await prisma.sentEmail.findFirst({ where: { invoiceId: invoice.id } });
     expect(logged).toMatchObject({ status: "FAILED" });
     expect(logged?.errorMessage).toMatch(/uhradená/);
+  });
+
+  it("reminder email states the outstanding balance, not the full invoice total, once a partial payment was made", async () => {
+    const user = await createUser("a@example.com");
+    await createEmailSettings(user.id);
+    const invoice = await createInvoice(user.id, {
+      dueDate: "2026-08-20",
+      paymentStatus: "PARTIALLY_PAID",
+      grossAmountCents: 100000, // 1000,00 €
+      paidAmountCents: 40000, // 400,00 € paid — 600,00 € still owed
+    });
+
+    const result = await sendReminderForInvoice(invoice, 1, "Dlží {{amount}}", "Subj");
+    expect(result.success).toBe(true);
+    expect(received[0].text).toContain("600,00");
+    expect(received[0].text).not.toContain("1 000,00");
+  });
+
+  it("records a FAILED attempt with a clear reason when the invoice has no generated XML yet, instead of mailing an empty attachment", async () => {
+    const user = await createUser("a@example.com");
+    await createEmailSettings(user.id);
+    const invoice = await createInvoice(user.id, { dueDate: "2026-08-20", xml: null });
+
+    const result = await sendReminderForInvoice(invoice, 1, "Text", "Subj");
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/XML/);
+    expect(received).toHaveLength(0);
+    const logged = await prisma.sentEmail.findFirst({ where: { invoiceId: invoice.id } });
+    expect(logged).toMatchObject({ status: "FAILED" });
+  });
+
+  it("refuses a second manual send (reminderNumber 0) within the cooldown window, so repeated clicks or a scripted loop can't spam the customer", async () => {
+    const user = await createUser("a@example.com");
+    await createEmailSettings(user.id);
+    const invoice = await createInvoice(user.id, { dueDate: "2026-08-20" });
+
+    const first = await sendReminderForInvoice(invoice, 0, "Text {{invoiceNumber}}", "Subj {{invoiceNumber}}");
+    expect(first.success).toBe(true);
+
+    const second = await sendReminderForInvoice(invoice, 0, "Text {{invoiceNumber}}", "Subj {{invoiceNumber}}");
+    expect(second.success).toBe(false);
+    expect(second.error).toMatch(/nedávno odoslaná/);
+    expect(received).toHaveLength(1); // only the first send actually went out over SMTP
+
+    const logged = await prisma.sentEmail.findMany({ where: { invoiceId: invoice.id }, orderBy: { sentAt: "asc" } });
+    expect(logged.map((l) => l.status)).toEqual(["SENT", "FAILED"]);
+  });
+
+  it("the manual-send cooldown never blocks scheduled reminders — a different reminderNumber is unaffected", async () => {
+    const user = await createUser("a@example.com");
+    await createEmailSettings(user.id);
+    const invoice = await createInvoice(user.id, { dueDate: "2026-08-20" });
+
+    await sendReminderForInvoice(invoice, 0, "Text", "Subj"); // manual send, logs reminderNumber 0
+    const scheduled = await sendReminderForInvoice(invoice, 1, "Text", "Subj"); // a real scheduled reminder right after
+    expect(scheduled.success).toBe(true);
+    expect(received).toHaveLength(2);
+  });
+
+  it("sendReminderForInvoice always reads current EmailSettings, not a value captured earlier", async () => {
+    const user = await createUser("a@example.com");
+    await prisma.emailSettings.create({
+      data: {
+        userId: user.id,
+        smtpHost: "127.0.0.1",
+        smtpPort: 1, // nothing listens here — this attempt must fail
+        smtpSecure: false,
+        smtpUser: "test@example.com",
+        encryptedSmtpPassword: encryptSecret("secret"),
+        fromEmail: "faktury@mojafirma.sk",
+        fromName: "Moja Firma s.r.o.",
+      },
+    });
+    const invoice = await createInvoice(user.id, { dueDate: "2026-08-20" });
+
+    const first = await sendReminderForInvoice(invoice, 1, "Text", "Subj");
+    expect(first.success).toBe(false);
+
+    await prisma.emailSettings.update({ where: { userId: user.id }, data: { smtpPort: port } });
+    const second = await sendReminderForInvoice(invoice, 2, "Text", "Subj");
+    expect(second.success).toBe(true); // proves this call picked up the just-updated port, not a cached value
+    expect(received).toHaveLength(1);
+  });
+
+  it("correctly processes multiple companies' due reminders in one batched cycle, keeping each invoice with its own company's settings", async () => {
+    const userA = await createUser("a@example.com");
+    const userB = await createUser("b@example.com");
+    await createEmailSettings(userA.id);
+    await createEmailSettings(userB.id);
+    await createReminderSettings(userA.id);
+    await createReminderSettings(userB.id);
+    const invoiceA = await createInvoice(userA.id, { dueDate: "2026-08-20", number: "A-1" });
+    const invoiceB = await createInvoice(userB.id, { dueDate: "2026-08-20", number: "B-1", customerEmail: "b-customer@example.com" });
+
+    const result = await runReminderCycle(NOW);
+    expect(result).toEqual({ sent: 2, failed: 0 });
+    expect(received).toHaveLength(2);
+    const recipients = received.map((m) => (m.to && "value" in m.to ? m.to.value[0].address : undefined)).sort();
+    expect(recipients).toEqual(["b-customer@example.com", "odberatel@example.com"]);
+
+    const loggedA = await prisma.sentEmail.findFirst({ where: { invoiceId: invoiceA.id } });
+    const loggedB = await prisma.sentEmail.findFirst({ where: { invoiceId: invoiceB.id } });
+    expect(loggedA?.userId).toBe(userA.id);
+    expect(loggedB?.userId).toBe(userB.id);
+  });
+
+  it("a single throwing item does not abort the rest of the cycle — other companies still get their reminders", async () => {
+    const poisoned = await createUser("poisoned@example.com");
+    const healthy = await createUser("healthy@example.com");
+    // A malformed encryptedSmtpPassword makes decryptSecret throw synchronously.
+    await prisma.emailSettings.create({
+      data: {
+        userId: poisoned.id,
+        smtpHost: "127.0.0.1",
+        smtpPort: port,
+        smtpSecure: false,
+        smtpUser: "test@example.com",
+        encryptedSmtpPassword: "not-a-valid-encrypted-value",
+        fromEmail: "faktury@mojafirma.sk",
+        fromName: "Poisoned s.r.o.",
+      },
+    });
+    await createReminderSettings(poisoned.id);
+    await createInvoice(poisoned.id, { dueDate: "2026-08-20", number: "P-1" });
+
+    await createEmailSettings(healthy.id);
+    await createReminderSettings(healthy.id);
+    const healthyInvoice = await createInvoice(healthy.id, { dueDate: "2026-08-20", number: "H-1", customerEmail: "healthy-customer@example.com" });
+
+    const result = await runReminderCycle(NOW);
+    expect(result.failed).toBeGreaterThanOrEqual(1);
+    expect(result.sent).toBe(1);
+    expect(received).toHaveLength(1);
+    expect(received[0].to && "value" in received[0].to ? received[0].to.value[0].address : undefined).toBe("healthy-customer@example.com");
+
+    const healthyLog = await prisma.sentEmail.findFirst({ where: { invoiceId: healthyInvoice.id } });
+    expect(healthyLog).toMatchObject({ status: "SENT" });
   });
 });

@@ -119,4 +119,19 @@ describe("sendEmail", () => {
     expect(result.success).toBe(false);
     expect(result.error).toBeTruthy();
   });
+
+  it("delivers a fromName containing a quote character correctly instead of producing a malformed From header", async () => {
+    // regression: building the header via a hand-written `"${fromName}" <${fromEmail}>` string
+    // breaks RFC 5322 quoted-string syntax the moment fromName itself contains a `"`.
+    const result = await sendEmail({
+      smtp: smtp({ fromName: 'Reštaurácia "U Podkovy" s.r.o.' }),
+      to: "odberatel@example.com",
+      subject: "x",
+      text: "x",
+    });
+    expect(result.success).toBe(true);
+    const msg = received.at(-1)!;
+    expect(msg.from?.value[0].name).toBe('Reštaurácia "U Podkovy" s.r.o.');
+    expect(msg.from?.value[0].address).toBe("faktury@mojafirma.sk");
+  });
 });

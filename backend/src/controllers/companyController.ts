@@ -152,10 +152,18 @@ export async function saveEmailSettings(req: Request, res: Response) {
     return res.status(400).json({ error: "Neplatné údaje", details: parsed.error.flatten().fieldErrors });
   }
   const { smtpPassword, ...rest } = parsed.data;
+  const existing = await prisma.emailSettings.findUnique({ where: { userId: req.userId! } });
+  if (!existing && !smtpPassword) {
+    return res.status(400).json({ error: "SMTP heslo je povinné pri prvom nastavení." });
+  }
+  // Empty password on an update means "leave it as-is" — keep the previously-stored ciphertext
+  // instead of re-encrypting an empty string, so editing an unrelated field (e.g. the email
+  // template) doesn't force re-entering a credential the frontend never gets to redisplay.
+  const encryptedSmtpPassword = smtpPassword ? encryptSecret(smtpPassword) : existing!.encryptedSmtpPassword;
   const settings = await prisma.emailSettings.upsert({
     where: { userId: req.userId! },
-    create: { userId: req.userId!, ...rest, encryptedSmtpPassword: encryptSecret(smtpPassword) },
-    update: { ...rest, encryptedSmtpPassword: encryptSecret(smtpPassword) },
+    create: { userId: req.userId!, ...rest, encryptedSmtpPassword },
+    update: { ...rest, encryptedSmtpPassword },
   });
   res.json(emailSettingsDto(settings));
 }
