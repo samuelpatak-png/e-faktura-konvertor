@@ -1,5 +1,6 @@
 import type { CompanyProfile, Invoice, InvoiceLine } from "@prisma/client";
 import { taxBreakdownFromLines } from "./invoiceMath";
+import { sumCreditedCents } from "./paymentStatus";
 import type { BrandingImage, PdfInvoiceInput } from "./pdfGenerator";
 
 export function brandingImage(data: string | null, mimeType: string | null): BrandingImage | undefined {
@@ -10,6 +11,9 @@ export function brandingImage(data: string | null, mimeType: string | null): Bra
 export type InvoiceWithLinesAndOriginal = Invoice & {
   lines: InvoiceLine[];
   original?: { number: string } | null;
+  // Credit notes issued against this invoice — omitted (undefined) by callers that don't load
+  // it (e.g. a CREDIT_NOTE row itself never has corrections of its own), treated the same as [].
+  corrections?: { grossAmountCents: number }[];
 };
 
 /**
@@ -56,6 +60,12 @@ export function buildPdfInvoiceInput(invoice: InvoiceWithLinesAndOriginal, profi
     grossAmountCents: invoice.grossAmountCents,
     taxBreakdown: taxBreakdownFromLines(invoice.lines),
     prepaidAmountCents: invoice.prepaidAmountCents ?? undefined,
+    // paidAmountCents already includes any prepaidAmountCents folded in at creation time (see
+    // invoiceController.generateInvoice) plus every later recordPayment — using it here (rather
+    // than prepaidAmountCents alone) is what keeps the PDF's "Na úhradu" and QR amount current
+    // after a partial payment, instead of only ever reflecting the original prepayment.
+    paidAmountCents: invoice.paidAmountCents,
+    creditedCents: sumCreditedCents(invoice.corrections ?? []),
     originalInvoiceNumber: invoice.original?.number,
     xmlContent: invoice.xml ?? "",
     branding: profile

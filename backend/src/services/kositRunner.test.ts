@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { runKositValidation } from "./kositRunner";
+import { runKositValidation, runProcess } from "./kositRunner";
 
 const fixturesDir = join(__dirname, "../../test/fixtures");
 
@@ -43,4 +43,18 @@ describe("runKositValidation", () => {
   it("never throws on garbage input, even when the toolchain is available", async () => {
     await expect(runKositValidation("not xml at all")).resolves.toBeDefined();
   });
+});
+
+describe("runProcess — stderr draining", () => {
+  // Regression: nothing used to read the child's stderr pipe. Writing well past the OS pipe
+  // buffer (~64KB) blocks the child's write() until something drains it — before the fix, that
+  // meant the call hung until `timeoutMs` finally killed the process (surfacing as code: null,
+  // not a natural exit).
+  it("does not hang when the child writes a large amount to stderr", async () => {
+    const script = "process.stderr.write('x'.repeat(500000)); process.exit(0);";
+    const start = Date.now();
+    const result = await runProcess(process.execPath, ["-e", script], 5000);
+    expect(result.code).toBe(0);
+    expect(Date.now() - start).toBeLessThan(3000); // comfortably under the 5s timeout — proves it wasn't killed
+  }, 10000);
 });

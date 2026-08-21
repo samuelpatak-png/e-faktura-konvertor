@@ -30,10 +30,11 @@ export function renderTemplate(template: string, vars: TemplateVars): string {
  * the manual "Odoslať emailom"/"Poslať upomienku teraz" controller actions and the reminder
  * scheduler, so a fix here (or a future variable) never has to be applied twice.
  *
- * `amount` is the outstanding balance (gross minus what's already paid), not the invoice total
- * — a PARTIALLY_PAID invoice is still emailed/reminded (see reminderScheduler.ts), and telling
- * the customer they owe the full original amount after they've already paid part of it would be
- * actively wrong, not just imprecise.
+ * `amount` is the outstanding balance (gross minus what's already paid and credited), not the
+ * invoice total — a PARTIALLY_PAID invoice is still emailed/reminded (see reminderScheduler.ts),
+ * and telling the customer they owe the full original amount after they've already paid part of
+ * it (or received a credit note) would be actively wrong, not just imprecise. Floored at 0 so a
+ * same-tick race between a payment and a send can never render as a negative amount.
  *
  * `dueDate` is nulled out for CREDIT_NOTE the same way buildPdfInvoiceInput does for the PDF
  * attached to the same email — the DB column holds a non-meaningful placeholder for those rows
@@ -41,9 +42,10 @@ export function renderTemplate(template: string, vars: TemplateVars): string {
  */
 export function buildInvoiceTemplateVars(
   invoice: Pick<Invoice, "number" | "documentType" | "dueDate" | "grossAmountCents" | "paidAmountCents" | "customerName">,
-  reminderNumber?: number
+  reminderNumber?: number,
+  creditedCents = 0
 ): TemplateVars {
-  const outstandingCents = invoice.grossAmountCents - invoice.paidAmountCents;
+  const outstandingCents = Math.max(0, invoice.grossAmountCents - invoice.paidAmountCents - creditedCents);
   return {
     invoiceNumber: invoice.number,
     amount: formatEurCents(outstandingCents),

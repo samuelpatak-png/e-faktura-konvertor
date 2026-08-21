@@ -19,8 +19,19 @@ export interface SapiSkSendParams {
   senderParticipantId: string; // "0245:<supplier DIČ>"
   receiverParticipantId: string; // "0245:<customer DIČ>"
   documentId: string; // invoice number
+  // Selects the Peppol documentTypeId's root element below. ADVANCE_TAX_DOCUMENT (386) is still
+  // a plain UBL <Invoice> root (see xmlGenerator.ts generateInvoiceXml) — only CREDIT_NOTE uses
+  // the CreditNote-2 identifier.
+  documentType: "INVOICE" | "CREDIT_NOTE" | "ADVANCE_TAX_DOCUMENT";
   xml: string;
 }
+
+const INVOICE_DOCUMENT_TYPE_ID =
+  "urn:oasis:names:specification:ubl:schema:xsd:Invoice-2::Invoice##urn:cen.eu:en16931:2017#compliant#urn:fdc:peppol.eu:2017:poacc:billing:3.0::2.1";
+// Same CustomizationID/ProfileID as Invoice-2 (see xmlGenerator.ts's CUSTOMIZATION_ID comment —
+// verified against the official Peppol BIS 3.0.21 Schematron); only the root element differs.
+const CREDIT_NOTE_DOCUMENT_TYPE_ID =
+  "urn:oasis:names:specification:ubl:schema:xsd:CreditNote-2::CreditNote##urn:cen.eu:en16931:2017#compliant#urn:fdc:peppol.eu:2017:poacc:billing:3.0::2.1";
 
 export interface SapiSkSendResult {
   success: boolean;
@@ -85,8 +96,7 @@ export async function sendInvoiceViaSapiSk(params: SapiSkSendParams): Promise<Sa
       {
         metadata: {
           documentId: params.documentId,
-          documentTypeId:
-            "urn:oasis:names:specification:ubl:schema:xsd:Invoice-2::Invoice##urn:cen.eu:en16931:2017#compliant#urn:fdc:peppol.eu:2017:poacc:billing:3.0::2.1",
+          documentTypeId: params.documentType === "CREDIT_NOTE" ? CREDIT_NOTE_DOCUMENT_TYPE_ID : INVOICE_DOCUMENT_TYPE_ID,
           processId: "urn:fdc:peppol.eu:2017:poacc:billing:01:1.0",
           senderParticipantId: params.senderParticipantId,
           receiverParticipantId: params.receiverParticipantId,

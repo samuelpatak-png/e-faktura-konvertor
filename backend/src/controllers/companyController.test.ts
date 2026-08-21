@@ -103,6 +103,39 @@ describe("companyController", () => {
     });
   });
 
+  describe("upsertCompanyProfile", () => {
+    const validProfileBody = {
+      name: "Dodávateľ s.r.o.",
+      ico: "11111111",
+      dic: "1111111111",
+      icDph: "SK1111111111",
+      street: "Ulica 1",
+      city: "Bratislava",
+      postalCode: "81101",
+      country: "SK",
+      iban: "SK3112000000198742637541", // valid IBAN checksum — goes through companyProfileSchema, unlike raw DB fixtures elsewhere
+      bic: null,
+    };
+
+    // Regression: PUT /company/profile used to `res.json(profile)` the raw Prisma row — once
+    // branding was uploaded, every save (even one unrelated to branding, e.g. just an IBAN
+    // change) sent multi-MB base64 blobs back, which the frontend then held in state and could
+    // re-submit on the *next* save, risking express.json's 2mb body limit.
+    it("never returns logoData/stampData/signatureData, even after branding was uploaded", async () => {
+      await companyController.upsertCompanyProfile(mockReq(userA.id, { body: validProfileBody }), mockRes());
+      await companyController.updateBranding(mockReq(userA.id, { files: { logo: [mockFile()] } }), mockRes());
+
+      const res = mockRes();
+      await companyController.upsertCompanyProfile(mockReq(userA.id, { body: validProfileBody }), res);
+      const body = res.body as Record<string, unknown>;
+      expect(body.logoData).toBeUndefined();
+      expect(body.stampData).toBeUndefined();
+      expect(body.signatureData).toBeUndefined();
+      expect(body.logo).toBe(true);
+      expect(body.name).toBe("Dodávateľ s.r.o.");
+    });
+  });
+
   describe("updateBranding", () => {
     it("uploads a single asset and flips its boolean flag on", async () => {
       await createCompanyProfile(userA.id);

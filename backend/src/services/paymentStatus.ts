@@ -3,10 +3,22 @@
 // This module never produces CANCELLED itself; callers decide that separately.
 export type AutoPaymentStatus = "UNPAID" | "PARTIALLY_PAID" | "PAID";
 
-export function computePaymentStatus(paidAmountCents: number, grossAmountCents: number): AutoPaymentStatus {
-  if (paidAmountCents <= 0) return "UNPAID";
-  if (paidAmountCents < grossAmountCents) return "PARTIALLY_PAID";
-  return "PAID";
+// creditedAmountCents defaults to 0 so every pre-existing 2-arg call site (payment recording,
+// invoice creation) is unaffected — it only matters where a credit note can reduce what's still
+// owed without itself being a "payment" (see invoiceController.createCreditNote). A credited
+// invoice reaching PAID this way means "fully settled", not "cash received" — paidAmountCents
+// itself is never touched by a credit note, only this derived status is.
+export function computePaymentStatus(paidAmountCents: number, grossAmountCents: number, creditedAmountCents = 0): AutoPaymentStatus {
+  const outstanding = grossAmountCents - paidAmountCents - creditedAmountCents;
+  if (outstanding <= 0) return "PAID";
+  if (paidAmountCents > 0 || creditedAmountCents > 0) return "PARTIALLY_PAID";
+  return "UNPAID";
+}
+
+/** Sum of credit notes issued against an invoice — the one place this reduction is computed, so
+ * every consumer (status, unpaid dashboard, PDF/QR payable amount, email amount) agrees. */
+export function sumCreditedCents(corrections: readonly { grossAmountCents: number }[]): number {
+  return corrections.reduce((sum, c) => sum + c.grossAmountCents, 0);
 }
 
 function toIsoDate(d: Date): string {

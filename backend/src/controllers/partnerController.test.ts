@@ -1,7 +1,13 @@
 import type { Request, Response } from "express";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "../lib/prisma";
 import * as partnerController from "./partnerController";
+import * as companyRegistry from "../services/companyRegistry";
+
+// The RPO registry is a real third-party service with no local test double (unlike SMTP/KOSIT
+// elsewhere in this codebase) — mocked here so the 3 possible outcomes (found/not_found/
+// unavailable) can each be asserted deterministically, without a real network call.
+vi.mock("../services/companyRegistry", () => ({ lookupByIco: vi.fn() }));
 
 function mockReq(userId: string, overrides: Partial<{ params: Record<string, string>; query: Record<string, string>; body: unknown }> = {}): Request {
   return { userId, params: {}, query: {}, body: {}, ...overrides } as unknown as Request;
@@ -189,6 +195,49 @@ describe("partnerController", () => {
       const byIco = mockRes();
       await partnerController.listPartners(mockReq(userA.id, { query: { q: "22222222" } }), byIco);
       expect((byIco.body as { items: { name: string }[] }).items.map((p) => p.name)).toEqual(["Beta s.r.o."]);
+    });
+  });
+
+  describe("lookupPartnerByIco (registry lookup)", () => {
+    beforeEach(() => {
+      vi.mocked(companyRegistry.lookupByIco).mockClear();
+    });
+
+    it("returns found: true with the registry data when the lookup finds a match", async () => {
+      vi.mocked(companyRegistry.lookupByIco).mockResolvedValue({
+        status: "found",
+        data: { name: "Nájdená firma s.r.o.", street: "Ulica 1", city: "Bratislava", postalCode: "81101" },
+      });
+      const res = mockRes();
+      await partnerController.lookupPartnerByIco(mockReq(userA.id, { params: { ico: "12345678" } }), res);
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toEqual({ found: true, data: { name: "Nájdená firma s.r.o.", street: "Ulica 1", city: "Bratislava", postalCode: "81101" } });
+    });
+
+    it("returns found: false with null data when the registry has no match", async () => {
+      vi.mocked(companyRegistry.lookupByIco).mockResolvedValue({ status: "not_found" });
+      const res = mockRes();
+      await partnerController.lookupPartnerByIco(mockReq(userA.id, { params: { ico: "99999999" } }), res);
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toEqual({ found: false, data: null });
+    });
+
+    // Regression: before this fix, "unavailable" collapsed into the same `{found: false}` a
+    // genuine non-match produces — the frontend's PartnerFormPage only shows its "unavailable"
+    // state when the request itself fails (a non-2xx status), so this must NOT be a 200.
+    it("returns a non-2xx status (not found: false) when the registry lookup is unavailable", async () => {
+      vi.mocked(companyRegistry.lookupByIco).mockResolvedValue({ status: "unavailable" });
+      const res = mockRes();
+      await partnerController.lookupPartnerByIco(mockReq(userA.id, { params: { ico: "12345678" } }), res);
+      expect(res.statusCode).toBe(503);
+      expect(res.body).not.toEqual({ found: false, data: null });
+    });
+
+    it("rejects a malformed IČO with 400 before ever calling the registry", async () => {
+      const res = mockRes();
+      await partnerController.lookupPartnerByIco(mockReq(userA.id, { params: { ico: "123" } }), res);
+      expect(res.statusCode).toBe(400);
+      expect(companyRegistry.lookupByIco).not.toHaveBeenCalled();
     });
   });
 });

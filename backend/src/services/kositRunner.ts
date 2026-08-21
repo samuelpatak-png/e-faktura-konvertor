@@ -27,11 +27,20 @@ const SCENARIOS = join(BIS_CONFIG, "scenarios.xml");
 // the common Homebrew keg-only location for local macOS dev.
 const JAVA_CANDIDATES = ["java", "/opt/homebrew/opt/openjdk@21/bin/java", "/usr/local/opt/openjdk@21/bin/java"];
 
-function runProcess(cmd: string, args: string[], timeoutMs: number): Promise<{ code: number | null; stdout: string }> {
+// Exported for direct unit testing (see kositRunner.test.ts) — the real KOSIT jar is gitignored
+// and only present after an explicit local setup step, so a test of runKositValidation alone
+// can't reliably exercise (or fail without) this specific stderr-draining behavior.
+export function runProcess(cmd: string, args: string[], timeoutMs: number): Promise<{ code: number | null; stdout: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { timeout: timeoutMs });
     let stdout = "";
     child.stdout?.on("data", (d: Buffer) => (stdout += d.toString()));
+    // Must drain stderr too, even though nothing here reads it — an unread pipe fills its OS
+    // buffer once the child writes enough to it (a Java stack trace or verbose warnings easily
+    // do), which blocks the child's write() and stalls this call until the `timeout` above
+    // finally kills it. Draining keeps a noisy validator run fast instead of hanging for up to
+    // 30s on every such upload.
+    child.stderr?.on("data", () => {});
     child.on("error", reject);
     child.on("close", (code) => resolve({ code, stdout }));
   });

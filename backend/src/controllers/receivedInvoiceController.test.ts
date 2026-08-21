@@ -165,6 +165,36 @@ describe("receivedInvoiceController", () => {
       );
       expect(res.statusCode).toBe(400);
     }, 15000);
+
+    // Regression: a received CREDIT_NOTE isn't a receivable we can record a payment against —
+    // this guard didn't exist at all before (only the outgoing side had it).
+    it("rejects a payment on a received credit note with 400", async () => {
+      const uploadRes = mockRes();
+      await receivedInvoiceController.uploadReceivedInvoice(mockReq(userA.id, { file: fileFrom(loadFixture("credit-note.xml")) }), uploadRes);
+      const id = (uploadRes.body as { id: string; documentType: string }).id;
+      expect((uploadRes.body as { documentType: string }).documentType).toBe("CREDIT_NOTE");
+
+      const res = mockRes();
+      await receivedInvoiceController.recordReceivedInvoicePayment(mockReq(userA.id, { params: { id }, body: { amountCents: 1 } }), res);
+      expect(res.statusCode).toBe(400);
+    }, 15000);
+
+    it("two concurrent payments racing for the last of the balance don't both succeed and overshoot the total", async () => {
+      const uploadRes = mockRes();
+      await receivedInvoiceController.uploadReceivedInvoice(mockReq(userA.id, { file: fileFrom(loadFixture("domestic-23-standard.xml")) }), uploadRes);
+      const body = uploadRes.body as { id: string; grossAmountCents: number };
+      const half = Math.ceil(body.grossAmountCents / 2);
+
+      const resA = mockRes();
+      const resB = mockRes();
+      await Promise.all([
+        receivedInvoiceController.recordReceivedInvoicePayment(mockReq(userA.id, { params: { id: body.id }, body: { amountCents: half } }), resA),
+        receivedInvoiceController.recordReceivedInvoicePayment(mockReq(userA.id, { params: { id: body.id }, body: { amountCents: half } }), resB),
+      ]);
+
+      const paid = await prisma.receivedInvoice.findUnique({ where: { id: body.id } });
+      expect(paid?.paidAmountCents).toBeLessThanOrEqual(body.grossAmountCents);
+    }, 15000);
   });
 
   describe("deleteReceivedInvoice", () => {

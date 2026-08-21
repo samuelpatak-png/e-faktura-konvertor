@@ -12,15 +12,17 @@ import { LineItemsTable } from "../components/invoice/LineItemsTable";
 import { InvoicePreview } from "../components/invoice/InvoicePreview";
 import { XmlPreview } from "../components/invoice/XmlPreview";
 import { PartnerAutocomplete } from "../components/invoice/PartnerAutocomplete";
+import { toLocalIsoDate } from "../lib/format";
 
 function today(): string {
-  return new Date().toISOString().slice(0, 10);
+  return toLocalIsoDate(new Date());
 }
 
 function plusDays(isoDate: string, days: number): string {
-  const d = new Date(isoDate);
-  d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
+  const [y, m, d] = isoDate.split("-").map(Number);
+  const date = new Date(y, m - 1, d); // local midnight for that calendar date, not UTC
+  date.setDate(date.getDate() + days);
+  return toLocalIsoDate(date);
 }
 
 const EMPTY_CUSTOMER: CustomerInput = { name: "", ico: "", dic: "", icDph: "", street: "", city: "", postalCode: "", country: "SK", email: "" };

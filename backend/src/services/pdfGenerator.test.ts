@@ -177,6 +177,61 @@ describe("generateInvoicePdf", () => {
     expect(text).toContain("73,00"); // 123.00 - 50.00
   });
 
+  // Regression: "Na úhradu" and the QR amount previously only ever subtracted prepaidAmountCents
+  // (the amount declared at invoice creation), never a later recordPayment — so a customer who'd
+  // already paid part of the invoice was shown, and asked via QR to pay, the full original
+  // amount again.
+  it("shows the reduced payable amount for a later partial payment, not just the original prepayment", async () => {
+    const bytes = await generateInvoicePdf(baseInput({ paidAmountCents: 5000 }));
+    if (!hasPdftotext()) return;
+    const text = extractText(bytes);
+    expect(text).toMatch(/Na úhradu/);
+    expect(text).toContain("73,00"); // 123.00 - 50.00 paid, same arithmetic as the prepayment case
+  });
+
+  it("reduces the payable amount by credit notes issued against the invoice too", async () => {
+    const bytes = await generateInvoicePdf(baseInput({ creditedCents: 5000 }));
+    if (!hasPdftotext()) return;
+    const text = extractText(bytes);
+    expect(text).toMatch(/Na úhradu/);
+    expect(text).toContain("73,00");
+  });
+
+  it("combines a partial payment and a credit note into one current balance", async () => {
+    const bytes = await generateInvoicePdf(baseInput({ paidAmountCents: 3000, creditedCents: 2000 }));
+    if (!hasPdftotext()) return;
+    const text = extractText(bytes);
+    expect(text).toContain("73,00"); // 123.00 - 30.00 - 20.00
+  });
+
+  it("does not render the payment-details/QR section once paid + credited already cover the full amount (nothing left to ask for)", async () => {
+    const bytes = await generateInvoicePdf(baseInput({ paidAmountCents: 12300 }));
+    if (!hasPdftotext()) return;
+    const text = extractText(bytes);
+    expect(text).not.toContain("PAY by square");
+    expect(text).not.toMatch(/Platobné údaje/);
+    // The totals block itself may still state "Na úhradu: 0,00 €" as a courtesy confirmation —
+    // that's fine as long as it's exactly 0, not the full gross amount.
+    if (/Na úhradu/.test(text)) {
+      expect(text).toContain("0,00");
+    }
+  });
+
+  // Regression: a non-digit invoice number fell back to a hardcoded "0" variable symbol, which
+  // every such invoice would then share — indistinguishable to the supplier reconciling payments.
+  it("uses a stable, non-zero numeric variable symbol fallback for an invoice number with no digits", async () => {
+    if (!hasPdftotext()) return;
+    const bytes1 = await generateInvoicePdf(baseInput({ number: "FA-ABC" }));
+    const bytes2 = await generateInvoicePdf(baseInput({ number: "FA-ABC" }));
+    const text1 = extractText(bytes1);
+    const text2 = extractText(bytes2);
+    const match = text1.match(/Variabilný symbol: (\d+)/);
+    expect(match).not.toBeNull();
+    expect(match![1]).not.toBe("0");
+    // Deterministic: the same invoice number always yields the same fallback symbol.
+    expect(text2).toContain(`Variabilný symbol: ${match![1]}`);
+  });
+
   it("embeds logo/stamp/signature images without throwing", async () => {
     const bytes = await generateInvoicePdf(
       baseInput({

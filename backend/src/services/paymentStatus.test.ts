@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agingBucket, computePaymentStatus, daysOverdue, isOverdue } from "./paymentStatus";
+import { agingBucket, computePaymentStatus, daysOverdue, isOverdue, sumCreditedCents } from "./paymentStatus";
 
 describe("computePaymentStatus", () => {
   it("is UNPAID when nothing has been paid", () => {
@@ -16,6 +16,38 @@ describe("computePaymentStatus", () => {
 
   it("is PAID if somehow paid more (defensive — callers should reject this before it gets here)", () => {
     expect(computePaymentStatus(10001, 10000)).toBe("PAID");
+  });
+
+  describe("creditedAmountCents (3rd arg, defaults to 0)", () => {
+    it("omitting it behaves exactly like the 2-arg form (backward compatible)", () => {
+      expect(computePaymentStatus(4000, 10000)).toBe(computePaymentStatus(4000, 10000, 0));
+    });
+
+    it("is PAID when paid + credited together cover the full amount, even with nothing paid", () => {
+      expect(computePaymentStatus(0, 10000, 10000)).toBe("PAID");
+    });
+
+    it("is PARTIALLY_PAID when a credit note only covers part of the amount", () => {
+      expect(computePaymentStatus(0, 10000, 4000)).toBe("PARTIALLY_PAID");
+    });
+
+    it("is PAID when paid + credited exceed the amount (a payment plus a credit note together)", () => {
+      expect(computePaymentStatus(6000, 10000, 5000)).toBe("PAID");
+    });
+
+    it("is UNPAID when neither paid nor credited is anything", () => {
+      expect(computePaymentStatus(0, 10000, 0)).toBe("UNPAID");
+    });
+  });
+});
+
+describe("sumCreditedCents", () => {
+  it("sums the gross amount of every credit note", () => {
+    expect(sumCreditedCents([{ grossAmountCents: 4000 }, { grossAmountCents: 1500 }])).toBe(5500);
+  });
+
+  it("is 0 for no credit notes", () => {
+    expect(sumCreditedCents([])).toBe(0);
   });
 });
 

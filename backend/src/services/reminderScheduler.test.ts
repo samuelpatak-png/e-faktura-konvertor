@@ -311,6 +311,27 @@ describe("reminder scheduler (DB-integrated, real local SMTP server)", () => {
     expect(logged?.errorMessage).toMatch(/uhradená/);
   });
 
+  // Regression: sendReminderForInvoice used to trust the `invoice` object it was handed
+  // verbatim. collectDueReminders loads every due invoice once at the start of an hourly tick
+  // and sends them one at a time — if the invoice got paid (or cancelled) via the API in
+  // between, the in-memory copy from earlier in the same tick was still stale and a reminder
+  // could go out for an invoice that was, by the time of sending, already settled.
+  it("does not send when the invoice was marked PAID in the DB after the in-memory copy was fetched", async () => {
+    const user = await createUser("a@example.com");
+    await createEmailSettings(user.id);
+    const staleInvoice = await createInvoice(user.id, { dueDate: "2026-08-20" }); // still UNPAID in this local variable
+    expect(staleInvoice.paymentStatus).toBe("UNPAID");
+
+    await prisma.invoice.update({ where: { id: staleInvoice.id }, data: { paymentStatus: "PAID", paidAmountCents: staleInvoice.grossAmountCents } });
+
+    const result = await sendReminderForInvoice(staleInvoice, 1, "Text {{invoiceNumber}}", "Subj {{invoiceNumber}}");
+    expect(result.success).toBe(false);
+    expect(received).toHaveLength(0);
+    const logged = await prisma.sentEmail.findFirst({ where: { invoiceId: staleInvoice.id } });
+    expect(logged).toMatchObject({ status: "FAILED" });
+    expect(logged?.errorMessage).toMatch(/uhradená/);
+  });
+
   it("reminder email states the outstanding balance, not the full invoice total, once a partial payment was made", async () => {
     const user = await createUser("a@example.com");
     await createEmailSettings(user.id);
@@ -325,6 +346,48 @@ describe("reminder scheduler (DB-integrated, real local SMTP server)", () => {
     expect(result.success).toBe(true);
     expect(received[0].text).toContain("600,00");
     expect(received[0].text).not.toContain("1 000,00");
+  });
+
+  it("reminder email states the balance after a credit note too, not just after cash payments", async () => {
+    const user = await createUser("a@example.com");
+    await createEmailSettings(user.id);
+    const invoice = await createInvoice(user.id, { dueDate: "2026-08-20", grossAmountCents: 100000 });
+    // Mirrors what invoiceController.createCreditNote does: a CREDIT_NOTE row referencing this
+    // invoice (200,00 € credited), plus the resulting PARTIALLY_PAID status on the original.
+    await prisma.invoice.create({
+      data: {
+        userId: user.id,
+        number: "DB-1",
+        issueDate: "2026-08-20",
+        dueDate: "2026-08-20",
+        buyerReference: "OBJ-1",
+        currency: "EUR",
+        documentType: "CREDIT_NOTE",
+        originalInvoiceId: invoice.id,
+        supplierName: "Dodávateľ s.r.o.",
+        supplierIco: "11111111",
+        supplierDic: "1111111111",
+        supplierStreet: "Ulica 1",
+        supplierCity: "Bratislava",
+        supplierPostalCode: "81101",
+        supplierCountry: "SK",
+        supplierIban: "SK9711000000002612345678",
+        customerName: "Odberateľ s.r.o.",
+        customerDic: "2222222222",
+        customerStreet: "Ulica 2",
+        customerCity: "Košice",
+        customerPostalCode: "04001",
+        customerCountry: "SK",
+        netAmountCents: 20000,
+        taxAmountCents: 0,
+        grossAmountCents: 20000,
+      },
+    });
+    await prisma.invoice.update({ where: { id: invoice.id }, data: { paymentStatus: "PARTIALLY_PAID" } });
+
+    const result = await sendReminderForInvoice(invoice, 1, "Dlží {{amount}}", "Subj");
+    expect(result.success).toBe(true);
+    expect(received[0].text).toContain("800,00"); // 1000,00 - 200,00 credited
   });
 
   it("records a FAILED attempt with a clear reason when the invoice has no generated XML yet, instead of mailing an empty attachment", async () => {

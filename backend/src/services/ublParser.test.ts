@@ -103,4 +103,143 @@ describe("parseUblDocument — real fixtures", () => {
     expect(parsed.documentType).toBe("INVOICE");
     expect(parsed.number).toBeTruthy();
   });
+
+  it("computes grossAmountCents from TaxInclusiveAmount (the full document total), not the prepayment-reduced PayableAmount", () => {
+    // invoice-with-prepayment.xml: net 500.00, tax 115.00, TaxInclusiveAmount 615.00,
+    // PrepaidAmount 200.00, PayableAmount 415.00. Using PayableAmount as "gross" would make
+    // net+tax (615.00) disagree with gross (415.00) and fail our own cross-checks.
+    const parsed = parseUblDocument(loadFixture("invoice-with-prepayment.xml"));
+    expect(parsed.netAmountCents).toBe(50000);
+    expect(parsed.taxAmountCents).toBe(11500);
+    expect(parsed.grossAmountCents).toBe(61500);
+    expect(parsed.netAmountCents + parsed.taxAmountCents).toBe(parsed.grossAmountCents);
+  });
+});
+
+describe("parseUblDocument — multi-occurrence elements that are usually singular", () => {
+  const partyBlock = (dic: string, name: string, extraPartyTaxSchemes: string[] = []) => `
+    <cac:Party>
+      <cbc:EndpointID schemeID="0245">${dic}</cbc:EndpointID>
+      <cac:PartyName><cbc:Name>${name}</cbc:Name></cac:PartyName>
+      <cac:PostalAddress>
+        <cbc:StreetName>Ulica 1</cbc:StreetName>
+        <cbc:CityName>Bratislava</cbc:CityName>
+        <cbc:PostalZone>81101</cbc:PostalZone>
+        <cac:Country><cbc:IdentificationCode>SK</cbc:IdentificationCode></cac:Country>
+      </cac:PostalAddress>
+      ${extraPartyTaxSchemes.join("\n")}
+      <cac:PartyLegalEntity>
+        <cbc:RegistrationName>${name}</cbc:RegistrationName>
+        <cbc:CompanyID>11111111</cbc:CompanyID>
+      </cac:PartyLegalEntity>
+    </cac:Party>`;
+
+  function invoiceXml({ taxTotals, supplierExtraSchemes = [] }: { taxTotals: string; supplierExtraSchemes?: string[] }): string {
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2" xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">
+  <cbc:ID>2026-MULTI-1</cbc:ID>
+  <cbc:IssueDate>2026-08-20</cbc:IssueDate>
+  <cbc:DueDate>2026-09-03</cbc:DueDate>
+  <cbc:DocumentCurrencyCode>EUR</cbc:DocumentCurrencyCode>
+  <cbc:BuyerReference>OBJ-1</cbc:BuyerReference>
+  <cac:AccountingSupplierParty>${partyBlock("1111111111", "Dodávateľ s.r.o.", supplierExtraSchemes)}</cac:AccountingSupplierParty>
+  <cac:AccountingCustomerParty>${partyBlock("2222222222", "Odberateľ s.r.o.")}</cac:AccountingCustomerParty>
+  ${taxTotals}
+  <cac:LegalMonetaryTotal>
+    <cbc:LineExtensionAmount currencyID="EUR">100.00</cbc:LineExtensionAmount>
+    <cbc:TaxExclusiveAmount currencyID="EUR">100.00</cbc:TaxExclusiveAmount>
+    <cbc:TaxInclusiveAmount currencyID="EUR">123.00</cbc:TaxInclusiveAmount>
+    <cbc:PayableAmount currencyID="EUR">123.00</cbc:PayableAmount>
+  </cac:LegalMonetaryTotal>
+  <cac:InvoiceLine>
+    <cbc:ID>1</cbc:ID>
+    <cbc:InvoicedQuantity unitCode="C62">1</cbc:InvoicedQuantity>
+    <cbc:LineExtensionAmount currencyID="EUR">100.00</cbc:LineExtensionAmount>
+    <cac:Item>
+      <cbc:Name>Položka</cbc:Name>
+      <cac:ClassifiedTaxCategory>
+        <cbc:ID>S</cbc:ID>
+        <cbc:Percent>23.00</cbc:Percent>
+        <cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme>
+      </cac:ClassifiedTaxCategory>
+    </cac:Item>
+    <cac:Price><cbc:PriceAmount currencyID="EUR">100.00</cbc:PriceAmount></cac:Price>
+  </cac:InvoiceLine>
+</Invoice>`;
+  }
+
+  // A second cac:TaxTotal for a tax currency alongside the document currency (BG-13) is legal
+  // UBL — before this fix it made the object auto-array under the hood, which broke the plain
+  // `child(doc, "cac:TaxTotal")` single-node lookup and silently produced taxAmountCents = 0.
+  it("uses the first (document-currency) TaxTotal's TaxAmount when a second TaxTotal is present", () => {
+    const xml = invoiceXml({
+      taxTotals: `
+        <cac:TaxTotal>
+          <cbc:TaxAmount currencyID="EUR">23.00</cbc:TaxAmount>
+          <cac:TaxSubtotal>
+            <cbc:TaxableAmount currencyID="EUR">100.00</cbc:TaxableAmount>
+            <cbc:TaxAmount currencyID="EUR">23.00</cbc:TaxAmount>
+            <cac:TaxCategory>
+              <cbc:ID>S</cbc:ID>
+              <cbc:Percent>23.00</cbc:Percent>
+              <cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme>
+            </cac:TaxCategory>
+          </cac:TaxSubtotal>
+        </cac:TaxTotal>
+        <cac:TaxTotal>
+          <cbc:TaxAmount currencyID="USD">25.30</cbc:TaxAmount>
+        </cac:TaxTotal>`,
+    });
+    const parsed = parseUblDocument(xml);
+    expect(parsed.taxAmountCents).toBe(2300);
+    expect(parsed.grossAmountCents).toBe(12300);
+  });
+
+  it("still works with the ordinary single-TaxTotal case", () => {
+    const xml = invoiceXml({
+      taxTotals: `
+        <cac:TaxTotal>
+          <cbc:TaxAmount currencyID="EUR">23.00</cbc:TaxAmount>
+          <cac:TaxSubtotal>
+            <cbc:TaxableAmount currencyID="EUR">100.00</cbc:TaxableAmount>
+            <cbc:TaxAmount currencyID="EUR">23.00</cbc:TaxAmount>
+            <cac:TaxCategory>
+              <cbc:ID>S</cbc:ID>
+              <cbc:Percent>23.00</cbc:Percent>
+              <cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme>
+            </cac:TaxCategory>
+          </cac:TaxSubtotal>
+        </cac:TaxTotal>`,
+    });
+    expect(parseUblDocument(xml).taxAmountCents).toBe(2300);
+  });
+
+  // A party can legally carry more than one PartyTaxScheme — same auto-array gotcha, which
+  // previously made icDph come back null even though the (first) VAT scheme was present.
+  it("uses the first PartyTaxScheme's CompanyID as icDph when a party has more than one", () => {
+    const xml = invoiceXml({
+      taxTotals: `<cac:TaxTotal><cbc:TaxAmount currencyID="EUR">23.00</cbc:TaxAmount></cac:TaxTotal>`,
+      supplierExtraSchemes: [
+        `<cac:PartyTaxScheme><cbc:CompanyID>SK1111111111</cbc:CompanyID><cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme></cac:PartyTaxScheme>`,
+        `<cac:PartyTaxScheme><cbc:CompanyID>SK9999999999</cbc:CompanyID><cac:TaxScheme><cbc:ID>XXX</cbc:ID></cac:TaxScheme></cac:PartyTaxScheme>`,
+      ],
+    });
+    const parsed = parseUblDocument(xml);
+    expect(parsed.supplier.icDph).toBe("SK1111111111");
+  });
+
+  it("finds the root Invoice element even when it's namespace-prefixed (e.g. <ns3:Invoice>)", () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<ns3:Invoice xmlns:ns3="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2" xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">
+  <cbc:ID>2026-PREFIXED-1</cbc:ID>
+  <cbc:IssueDate>2026-08-20</cbc:IssueDate>
+  <cbc:DocumentCurrencyCode>EUR</cbc:DocumentCurrencyCode>
+  <cac:AccountingSupplierParty>${partyBlock("1111111111", "Dodávateľ s.r.o.")}</cac:AccountingSupplierParty>
+  <cac:AccountingCustomerParty>${partyBlock("2222222222", "Odberateľ s.r.o.")}</cac:AccountingCustomerParty>
+</ns3:Invoice>`;
+    const parsed = parseUblDocument(xml);
+    expect(parsed.documentType).toBe("INVOICE");
+    expect(parsed.number).toBe("2026-PREFIXED-1");
+    expect(parsed.supplier.dic).toBe("1111111111");
+  });
 });

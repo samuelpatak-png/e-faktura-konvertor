@@ -40,7 +40,12 @@ export function InvoiceHistoryPage() {
 
   const filtered = useMemo(() => {
     if (!invoices) return null;
-    return paymentFilter === "ALL" ? invoices : invoices.filter((inv) => inv.paymentStatus === paymentFilter);
+    if (paymentFilter === "ALL") return invoices;
+    // Payment status is only ever meaningful for a plain INVOICE (the "Úhrada" column shows
+    // "—" for anything else, see below) — a credit note's paymentStatus column defaults to
+    // UNPAID and is never updated, so without this a "Neuhradené" filter mixed dobropisy into a
+    // list that's supposed to be actual unpaid receivables.
+    return invoices.filter((inv) => inv.documentType === "INVOICE" && inv.paymentStatus === paymentFilter);
   }, [invoices, paymentFilter]);
 
   if (error) return <Alert tone="danger">{error}</Alert>;

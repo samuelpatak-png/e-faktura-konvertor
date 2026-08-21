@@ -105,10 +105,20 @@ export const sendInvoiceEmailSchema = z.object({
   ),
 });
 
+// `new Date("2026-02-31")` does NOT produce Invalid Date — JS silently rolls it over to
+// 2026-03-03, so the old `!isNaN(new Date(v).getTime())` check let non-existent calendar days
+// through. Round-tripping through Date.UTC and comparing the components back catches that: an
+// out-of-range day/month shifts the resulting date, so the components no longer match.
+function isValidCalendarDate(v: string): boolean {
+  const [y, m, d] = v.split("-").map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  return date.getUTCFullYear() === y && date.getUTCMonth() === m - 1 && date.getUTCDate() === d;
+}
+
 const dateSchema = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, "Dátum musí byť vo formáte YYYY-MM-DD")
-  .refine((v) => !Number.isNaN(new Date(v).getTime()), "Neplatný dátum");
+  .refine(isValidCalendarDate, "Neplatný dátum (neexistujúci kalendárny deň)");
 
 // Tolerance absorbs float noise (e.g. 9.99 not being exactly representable) while still
 // rejecting genuine sub-cent input (e.g. 0.125), which would otherwise silently distort line
@@ -123,9 +133,18 @@ const vatRateSchema = z.union([z.literal(23), z.literal(19), z.literal(5), z.lit
 
 const unitCodeSchema = z.string().refine(isValidUnitCode, "Neplatná merná jednotka (UN/ECE Rec 20)");
 
+// Capped at 3 decimal places — enough for real fractional units (0.5 hod, 1.25 kg) while
+// rejecting float noise (e.g. 2.0000000000000004 from client-side arithmetic), which would
+// otherwise land verbatim in the generated XML's InvoicedQuantity/CreditedQuantity.
+const quantitySchema = z
+  .number()
+  .positive()
+  .max(1_000_000)
+  .refine((v) => Math.abs(v * 1000 - Math.round(v * 1000)) < 1e-6, "Množstvo môže mať najviac 3 desatinné miesta");
+
 export const invoiceLineSchema = z.object({
   description: z.string().trim().min(1).max(500),
-  quantity: z.number().positive().max(1_000_000),
+  quantity: quantitySchema,
   unitCode: unitCodeSchema.default("C62"),
   unitPrice: twoDecimalPriceSchema,
   taxRatePercent: vatRateSchema,
@@ -173,6 +192,14 @@ export const invoiceInputSchema = z
   .refine((data) => new Date(data.dueDate).getTime() >= new Date(data.issueDate).getTime(), {
     message: "Dátum splatnosti nemôže byť pred dátumom vystavenia",
     path: ["dueDate"],
+  })
+  // A 386 ("daňový doklad k prijatej platbe") IS itself the document confirming receipt of an
+  // advance — it can't also reference an earlier prepayment via its own prepaidAmountCents,
+  // that would be a doklad about a doklad. See invoiceController.generateInvoice for how a 386's
+  // own amount is instead marked paid in full at creation.
+  .refine((data) => !(data.isAdvanceTaxDocument && data.prepaidAmountCents), {
+    message: "Daňový doklad k prijatej platbe (386) nemôže mať vlastný preddavok — je sám osebe dokladom o platbe.",
+    path: ["prepaidAmountCents"],
   });
 
 export type InvoiceInput = z.infer<typeof invoiceInputSchema>;
