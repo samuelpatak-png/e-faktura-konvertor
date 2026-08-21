@@ -544,11 +544,15 @@ export function SettingsPage() {
               <Input
                 label="SMTP heslo"
                 type="password"
-                required
-                placeholder={emailConfigured ? "Nastavené — zadaj znova pri zmene" : undefined}
+                required={!emailConfigured}
+                placeholder={emailConfigured ? "Nastavené — nechaj prázdne, ak sa nemení" : undefined}
                 value={emailSettings.smtpPassword}
                 onChange={(e) => setEmailSettings({ ...emailSettings, smtpPassword: e.target.value })}
-                hint="Uloží sa zašifrovane, nikdy sa nezobrazí späť."
+                hint={
+                  emailConfigured
+                    ? "Nechaj prázdne, ak chceš zmeniť len iné pole — pôvodné heslo zostane zašifrované beze zmeny."
+                    : "Uloží sa zašifrovane, nikdy sa nezobrazí späť."
+                }
               />
             </div>
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">

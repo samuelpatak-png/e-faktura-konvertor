@@ -35,15 +35,22 @@ export interface SendEmailResult {
  * swap the transport is this file.
  */
 export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult> {
-  const transporter = nodemailer.createTransport({
-    host: input.smtp.host,
-    port: input.smtp.port,
-    secure: input.smtp.secure,
-    auth: { user: input.smtp.user, pass: input.smtp.password },
-  });
+  // Everything that can throw — including transport construction itself — lives inside the try
+  // block, matching the "must never throw into the caller" contract below: a bad host/port
+  // value or any other synchronous failure must come back as {success:false}, not an exception.
+  let transporter: ReturnType<typeof nodemailer.createTransport> | undefined;
   try {
+    transporter = nodemailer.createTransport({
+      host: input.smtp.host,
+      port: input.smtp.port,
+      secure: input.smtp.secure,
+      auth: { user: input.smtp.user, pass: input.smtp.password },
+    });
     await transporter.sendMail({
-      from: `"${input.smtp.fromName}" <${input.smtp.fromEmail}>`,
+      // A structured {name, address} object (not a hand-built `"name" <addr>` string) so
+      // nodemailer escapes a quote or backslash embedded in fromName correctly instead of
+      // producing a malformed RFC 5322 header.
+      from: { name: input.smtp.fromName, address: input.smtp.fromEmail },
       to: input.to,
       subject: input.subject,
       text: input.text,
@@ -59,6 +66,6 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
     // send is a normal, expected outcome to record (SentEmail.status = FAILED), not a crash.
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   } finally {
-    transporter.close();
+    transporter?.close();
   }
 }

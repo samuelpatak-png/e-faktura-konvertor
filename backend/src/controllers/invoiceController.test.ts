@@ -41,7 +41,7 @@ async function createUser(email: string) {
 
 async function createInvoice(
   userId: string,
-  overrides: Partial<{ number: string; dueDate: string; grossAmountCents: number; documentType: "INVOICE" | "CREDIT_NOTE" | "ADVANCE_TAX_DOCUMENT"; originalInvoiceId: string; supplierIcDph: string | null; xml: string | null; prepaidAmountCents: number; customerEmail: string | null }> = {}
+  overrides: Partial<{ number: string; dueDate: string; grossAmountCents: number; paidAmountCents: number; paymentStatus: "UNPAID" | "PARTIALLY_PAID" | "PAID" | "CANCELLED"; documentType: "INVOICE" | "CREDIT_NOTE" | "ADVANCE_TAX_DOCUMENT"; originalInvoiceId: string; supplierIcDph: string | null; xml: string | null; prepaidAmountCents: number; customerEmail: string | null }> = {}
 ) {
   return prisma.invoice.create({
     data: {
@@ -58,6 +58,8 @@ async function createInvoice(
       supplierIcDph: overrides.supplierIcDph !== undefined ? overrides.supplierIcDph : "SK1111111111",
       documentType: overrides.documentType ?? "INVOICE",
       originalInvoiceId: overrides.originalInvoiceId,
+      paidAmountCents: overrides.paidAmountCents ?? 0,
+      paymentStatus: overrides.paymentStatus ?? "UNPAID",
       prepaidAmountCents: overrides.prepaidAmountCents,
       xml: overrides.xml !== undefined ? overrides.xml : "<Invoice><cbc:ID>2026-0001</cbc:ID></Invoice>",
       supplierStreet: "Ulica 1",
@@ -667,6 +669,35 @@ describe("invoiceController payments", () => {
       await invoiceController.sendInvoiceEmail(mockReq(userA.id, { params: { id: invoice.id } }), res);
       expect(res.statusCode).toBe(404);
       expect(receivedEmails).toHaveLength(0);
+    });
+
+    it("states the outstanding balance, not the full total, for a partially-paid invoice", async () => {
+      await createEmailSettings(userA.id);
+      const invoice = await createInvoice(userA.id, {
+        customerEmail: "odberatel@example.com",
+        grossAmountCents: 100000,
+        paidAmountCents: 40000,
+        paymentStatus: "PARTIALLY_PAID",
+      });
+
+      const res = mockRes();
+      await invoiceController.sendInvoiceEmail(mockReq(userA.id, { params: { id: invoice.id } }), res);
+
+      expect(res.statusCode).toBe(200);
+      expect(receivedEmails[0].text).toContain("600,00");
+      expect(receivedEmails[0].text).not.toContain("1 000,00");
+    });
+
+    it("shows no due date for a credit note instead of the issueDate placeholder the DB column holds", async () => {
+      await createEmailSettings(userA.id);
+      const invoice = await createInvoice(userA.id, { customerEmail: "odberatel@example.com", documentType: "CREDIT_NOTE" });
+
+      const res = mockRes();
+      await invoiceController.sendInvoiceEmail(mockReq(userA.id, { params: { id: invoice.id } }), res);
+
+      expect(res.statusCode).toBe(200);
+      expect(receivedEmails[0].text).toContain("—");
+      expect(receivedEmails[0].text).not.toContain("15.08.2026"); // the placeholder dueDate createInvoice sets by default
     });
   });
 

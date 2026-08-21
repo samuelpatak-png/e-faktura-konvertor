@@ -74,7 +74,12 @@ export const emailSettingsSchema = z.object({
   smtpUser: z.string().trim().min(1).max(256),
   // Plaintext in the request body (over HTTPS, same as sapiSkCredentialSchema.clientSecret) —
   // encrypted at rest by the controller via lib/crypto.ts, never returned back in a response.
-  smtpPassword: z.string().min(1),
+  // An empty string means "keep the existing password unchanged" on an update — the frontend
+  // never re-sends a password it was never given back (see getEmailSettings), so re-saving an
+  // unrelated field like the email template must not force re-entering it. Enforced as required
+  // only for the very first save, in the controller (which knows whether a row already exists) —
+  // this schema alone can't know that.
+  smtpPassword: z.string(),
   fromEmail: z.string().trim().toLowerCase().email(),
   fromName: templateTextSchema(256),
   subjectTemplate: templateTextSchema(256),

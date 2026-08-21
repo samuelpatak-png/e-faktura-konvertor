@@ -278,6 +278,40 @@ describe("companyController", () => {
       await companyController.getEmailSettings(mockReq(userB.id), res);
       expect(res.body).toEqual({ configured: false });
     });
+
+    it("rejects the very first save with an empty SMTP password — there is nothing existing to fall back to", async () => {
+      const res = mockRes();
+      await companyController.saveEmailSettings(mockReq(userA.id, { body: { ...validEmailSettingsBody, smtpPassword: "" } }), res);
+      expect(res.statusCode).toBe(400);
+      expect(await prisma.emailSettings.findUnique({ where: { userId: userA.id } })).toBeNull();
+    });
+
+    it("re-saving with an empty password keeps the previously-encrypted password unchanged, so editing only the template doesn't require re-entering it", async () => {
+      await companyController.saveEmailSettings(mockReq(userA.id, { body: validEmailSettingsBody }), mockRes());
+      const before = await prisma.emailSettings.findUnique({ where: { userId: userA.id } });
+
+      const res = mockRes();
+      await companyController.saveEmailSettings(
+        mockReq(userA.id, { body: { ...validEmailSettingsBody, smtpPassword: "", subjectTemplate: "Nový predmet {{invoiceNumber}}" } }),
+        res
+      );
+      expect(res.statusCode).toBe(200);
+
+      const after = await prisma.emailSettings.findUnique({ where: { userId: userA.id } });
+      expect(after?.encryptedSmtpPassword).toBe(before?.encryptedSmtpPassword);
+      expect(after?.subjectTemplate).toBe("Nový predmet {{invoiceNumber}}");
+    });
+
+    it("re-saving with a new password re-encrypts it, replacing the old ciphertext", async () => {
+      await companyController.saveEmailSettings(mockReq(userA.id, { body: validEmailSettingsBody }), mockRes());
+      const before = await prisma.emailSettings.findUnique({ where: { userId: userA.id } });
+
+      await companyController.saveEmailSettings(mockReq(userA.id, { body: { ...validEmailSettingsBody, smtpPassword: "new-password-456" } }), mockRes());
+      const after = await prisma.emailSettings.findUnique({ where: { userId: userA.id } });
+
+      expect(after?.encryptedSmtpPassword).not.toBe(before?.encryptedSmtpPassword);
+      expect(after?.encryptedSmtpPassword).not.toContain("new-password-456");
+    });
   });
 
   const validReminderSettingsBody = {

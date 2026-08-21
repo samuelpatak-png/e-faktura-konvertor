@@ -2,16 +2,16 @@ import type { Request, Response } from "express";
 import { prisma } from "../lib/prisma";
 import type { CompanyProfile, Invoice } from "@prisma/client";
 import { invoiceInputSchema, recordPaymentSchema, creditNoteInputSchema, sendInvoiceEmailSchema, type InvoiceInput } from "../validators/schemas";
-import { computeInvoiceTotals, centsToEur, formatEurCents, type ComputedInvoiceTotals } from "../services/invoiceMath";
+import { computeInvoiceTotals, centsToEur, type ComputedInvoiceTotals } from "../services/invoiceMath";
 import { validateComputedInvoice, type ValidationResult } from "../services/invoiceValidator";
 import { generateInvoiceXml, generateCreditNoteXml } from "../services/xmlGenerator";
-import { generateInvoicePdf, formatDateSk } from "../services/pdfGenerator";
+import { generateInvoicePdf } from "../services/pdfGenerator";
 import { buildPdfInvoiceInput } from "../services/invoicePdfInput";
 import { decryptSecret } from "../lib/crypto";
 import { sendInvoiceViaSapiSk } from "../services/sapiSkClient";
 import { computePaymentStatus, isOverdue, daysOverdue, agingBucket } from "../services/paymentStatus";
 import { sendEmail } from "../services/emailSender";
-import { renderTemplate } from "../services/emailTemplate";
+import { renderTemplate, buildInvoiceTemplateVars } from "../services/emailTemplate";
 import { sendReminderForInvoice } from "../services/reminderScheduler";
 
 async function loadSupplier(userId: string) {
@@ -549,15 +549,6 @@ export async function createCreditNote(req: Request, res: Response) {
   }
 }
 
-function invoiceTemplateVars(invoice: Pick<Invoice, "number" | "grossAmountCents" | "dueDate" | "customerName">) {
-  return {
-    invoiceNumber: invoice.number,
-    amount: formatEurCents(invoice.grossAmountCents),
-    dueDate: formatDateSk(invoice.dueDate),
-    customerName: invoice.customerName,
-  };
-}
-
 // WP7: emailing an invoice never touches Invoice.status/sentAt/sapiProviderDocumentId — those
 // track the legally-recognized SAPI-SK/Peppol delivery specifically (see sendInvoiceViaSapi
 // above). A courtesy PDF+XML email is a separate channel, tracked entirely via SentEmail.
@@ -586,7 +577,7 @@ export async function sendInvoiceEmail(req: Request, res: Response) {
   const profile = await prisma.companyProfile.findUnique({ where: { userId: req.userId! } });
   const pdf = await generateInvoicePdf(buildPdfInvoiceInput(invoice, profile));
 
-  const vars = invoiceTemplateVars(invoice);
+  const vars = buildInvoiceTemplateVars(invoice);
   const subject = renderTemplate(emailSettings.subjectTemplate, vars);
   const body = renderTemplate(emailSettings.bodyTemplate, vars);
 
@@ -639,18 +630,15 @@ export async function sendReminderNow(req: Request, res: Response) {
     return res.status(400).json({ success: false, errors: ["Upomienku možno poslať len k bežnej faktúre."] });
   }
 
-  const emailSettings = await prisma.emailSettings.findUnique({ where: { userId: req.userId! } });
-  if (!emailSettings) {
-    return res.status(400).json({ success: false, errors: ["Najprv nastav SMTP v Nastaveniach."] });
-  }
-
   const reminderSettings = await prisma.reminderSettings.findUnique({ where: { userId: req.userId! } });
   const subjectTemplate = reminderSettings?.subjectTemplate ?? "Upomienka: Faktúra {{invoiceNumber}} po splatnosti";
   const bodyTemplate =
     reminderSettings?.bodyTemplate ??
     "Dobrý deň,\n\npripomíname, že faktúra č. {{invoiceNumber}} na sumu {{amount}} so splatnosťou {{dueDate}} nebola doteraz uhradená. Prosíme o úhradu v čo najkratšom čase.\n\nS pozdravom";
 
-  const result = await sendReminderForInvoice(invoice, emailSettings, 0, bodyTemplate, subjectTemplate);
+  // sendReminderForInvoice fetches EmailSettings itself and returns "Najprv nastav SMTP..." if
+  // none exists — no need to pre-check it here too.
+  const result = await sendReminderForInvoice(invoice, 0, bodyTemplate, subjectTemplate);
   if (!result.success) return res.status(400).json({ success: false, errors: [result.error ?? "Odoslanie zlyhalo"] });
   res.json({ success: true });
 }

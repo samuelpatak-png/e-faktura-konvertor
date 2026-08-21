@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { centsToEur, computeInvoiceTotals, eurToCents, taxBreakdownFromLines } from "./invoiceMath";
+import { centsToEur, computeInvoiceTotals, eurToCents, formatEurCents, taxBreakdownFromLines } from "./invoiceMath";
 
 type LineInput = Parameters<typeof computeInvoiceTotals>[0]["lines"][number];
 
@@ -98,5 +98,28 @@ describe("taxBreakdownFromLines", () => {
 
   it("returns an empty array for no lines", () => {
     expect(taxBreakdownFromLines([])).toEqual([]);
+  });
+});
+
+describe("formatEurCents", () => {
+  it("formats whole euros with two decimal places", () => {
+    expect(formatEurCents(12300)).toContain("123,00");
+  });
+
+  it("formats a sub-euro amount correctly", () => {
+    expect(formatEurCents(50)).toContain("0,50");
+  });
+
+  it("formats zero", () => {
+    expect(formatEurCents(0)).toContain("0,00");
+  });
+
+  it("includes the euro sign", () => {
+    expect(formatEurCents(100)).toContain("€");
+  });
+
+  it("uses a comma as the decimal separator (sk-SK locale)", () => {
+    expect(formatEurCents(199)).toContain("1,99");
+    expect(formatEurCents(199)).not.toContain("1.99");
   });
 });
