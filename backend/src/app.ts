@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
+import * as Sentry from "@sentry/node";
 import { env } from "./lib/env";
 import authRoutes from "./routes/auth.routes";
 import companyRoutes from "./routes/company.routes";
@@ -26,5 +27,9 @@ app.use("/api/pdf", pdfRoutes);
 app.use("/api/partner", partnerRoutes);
 app.use("/api/price-list", priceListRoutes);
 app.use("/api/received-invoice", receivedInvoiceRoutes);
+
+// After every route, before the final error handler — a no-op chain when SENTRY_DSN isn't set
+// (instrument.ts never called Sentry.init, so this middleware has nothing to report to).
+Sentry.setupExpressErrorHandler(app);
 
 app.use(errorHandler);

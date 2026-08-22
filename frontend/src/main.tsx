@@ -1,3 +1,4 @@
+import './instrument' // must be first — see instrument.ts
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'

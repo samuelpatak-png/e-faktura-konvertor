@@ -16,6 +16,19 @@ export const loginSchema = z.object({
   password: z.string().min(1),
 });
 
+export const requestPasswordResetSchema = z.object({
+  email: z.string().trim().toLowerCase().email(),
+});
+
+export const resetPasswordSchema = z.object({
+  token: z.string().trim().min(1),
+  newPassword: z.string().min(8, "Heslo musí mať aspoň 8 znakov"),
+});
+
+export const verifyEmailSchema = z.object({
+  token: z.string().trim().min(1),
+});
+
 // Normalizes "", null and undefined all to null before validating — the frontend sends any
 // of the three for "not set" depending on the form (React state vs. an omitted JSON key), and
 // null is what Prisma expects to actually clear a nullable column on update (undefined there

@@ -44,6 +44,7 @@ export type UnitCode = (typeof UNIT_CODES)[number]["code"];
 export interface User {
   id: string;
   email: string;
+  emailVerified: boolean;
   companyProfile: CompanyProfile | null;
 }
 

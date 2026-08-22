@@ -1,8 +1,26 @@
 import type { Request, Response } from "express";
-import { describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { SMTPServer } from "smtp-server";
+import { simpleParser, type ParsedMail } from "mailparser";
 import { prisma } from "../lib/prisma";
 import { AUTH_COOKIE_NAME } from "../middleware/auth";
+import { generateLinkToken, hashLinkToken } from "../lib/crypto";
+import * as appSmtp from "../lib/appSmtp";
 import * as authController from "./authController";
+
+// getAppSmtpConfig reads from env.ts, which is parsed once at process startup — too early to
+// point at a test SMTP server whose port is only known after it starts listening. Mocked at
+// this one boundary only; the actual send below still goes through a real local SMTP server
+// (same "verify empirically" approach as emailSender.test.ts/reminderScheduler.test.ts), so
+// this proves the real send path, just not the env-parsing step (which is a one-line accessor —
+// see appSmtp.ts).
+vi.mock("../lib/appSmtp", () => ({ getAppSmtpConfig: vi.fn() }));
+
+function extractToken(text: string): string {
+  const match = text.match(/token=([0-9a-f]{64})/);
+  if (!match) throw new Error(`no token found in email text: ${text}`);
+  return match[1];
+}
 
 function mockReq(overrides: Partial<{ userId: string; params: Record<string, string>; body: unknown }> = {}): Request {
   return { params: {}, body: {}, ...overrides } as unknown as Request;
@@ -58,6 +76,228 @@ const TINY_PNG = Buffer.from(
 );
 
 describe("authController", () => {
+  describe("password reset & email verification (real local SMTP server)", () => {
+    let server: SMTPServer;
+    let port: number;
+    let received: ParsedMail[] = [];
+
+    beforeAll(async () => {
+      server = new SMTPServer({
+        authOptional: true,
+        disabledCommands: ["STARTTLS"],
+        onAuth(_auth, _session, callback) {
+          callback(null, { user: "test" });
+        },
+        onData(stream, _session, callback) {
+          const chunks: Buffer[] = [];
+          stream.on("data", (chunk: Buffer) => chunks.push(chunk));
+          stream.on("end", () => {
+            simpleParser(Buffer.concat(chunks))
+              .then((parsed) => {
+                received.push(parsed);
+                callback();
+              })
+              .catch((err) => callback(err));
+          });
+        },
+      });
+      await new Promise<void>((resolve, reject) => {
+        server.listen(0, "127.0.0.1", () => resolve());
+        server.on("error", reject);
+      });
+      const address = server.server.address();
+      port = typeof address === "object" && address ? address.port : 0;
+
+      vi.mocked(appSmtp.getAppSmtpConfig).mockReturnValue({
+        host: "127.0.0.1",
+        port,
+        secure: false,
+        user: "test",
+        password: "test",
+        fromEmail: "noreply@example.com",
+        fromName: "e-Faktúra Konvertor",
+      });
+    });
+
+    afterAll(async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      // Un-configure the mock so sibling describe blocks in this file (which call register()
+      // too, but don't care about email at all) don't try sending through this now-closed
+      // server — same "no APP_SMTP configured" default those tests were written against.
+      vi.mocked(appSmtp.getAppSmtpConfig).mockReturnValue(null);
+    });
+
+    afterEach(() => {
+      received = [];
+    });
+
+    describe("register — sends a verification email", () => {
+      it("sends a real verification email with a working link and stores only the token's hash", async () => {
+        const res = mockRes();
+        await authController.register(mockReq({ body: { email: "verify-me@example.com", password: "password123" } }), res);
+        expect(res.statusCode).toBe(201);
+        expect(received).toHaveLength(1);
+        expect(received[0].to && "value" in received[0].to ? received[0].to.value[0].address : undefined).toBe("verify-me@example.com");
+
+        const user = await prisma.user.findUnique({ where: { email: "verify-me@example.com" } });
+        expect(user?.emailVerified).toBe(false);
+
+        const token = extractToken(received[0].text ?? "");
+        const tokenRow = await prisma.emailVerificationToken.findFirst({ where: { userId: user!.id } });
+        expect(tokenRow?.tokenHash).toBe(hashLinkToken(token));
+      });
+
+      it("still succeeds (just without an email) when APP_SMTP isn't configured — never blocks registration", async () => {
+        vi.mocked(appSmtp.getAppSmtpConfig).mockReturnValueOnce(null);
+        const res = mockRes();
+        await authController.register(mockReq({ body: { email: "no-smtp-configured@example.com", password: "password123" } }), res);
+        expect(res.statusCode).toBe(201);
+        expect(received).toHaveLength(0);
+      });
+    });
+
+    describe("requestPasswordReset", () => {
+      it("responds identically whether or not the account exists (anti-enumeration)", async () => {
+        await prisma.user.create({ data: { email: "has-account@example.com", passwordHash: "x" } });
+
+        const existingRes = mockRes();
+        await authController.requestPasswordReset(mockReq({ body: { email: "has-account@example.com" } }), existingRes);
+        const missingRes = mockRes();
+        await authController.requestPasswordReset(mockReq({ body: { email: "no-such-account@example.com" } }), missingRes);
+
+        expect(existingRes.statusCode).toBe(missingRes.statusCode);
+        expect(existingRes.body).toEqual(missingRes.body);
+      });
+
+      it("only actually sends an email when the account exists", async () => {
+        await prisma.user.create({ data: { email: "real-account@example.com", passwordHash: "x" } });
+        await authController.requestPasswordReset(mockReq({ body: { email: "real-account@example.com" } }), mockRes());
+        expect(received).toHaveLength(1);
+
+        received = [];
+        await authController.requestPasswordReset(mockReq({ body: { email: "fake-account@example.com" } }), mockRes());
+        expect(received).toHaveLength(0);
+      });
+
+      it("a fresh request invalidates an earlier unused token for the same user", async () => {
+        await prisma.user.create({ data: { email: "double-request@example.com", passwordHash: "x" } });
+
+        await authController.requestPasswordReset(mockReq({ body: { email: "double-request@example.com" } }), mockRes());
+        const firstToken = extractToken(received[0].text ?? "");
+        received = [];
+        await authController.requestPasswordReset(mockReq({ body: { email: "double-request@example.com" } }), mockRes());
+        const secondToken = extractToken(received[0].text ?? "");
+
+        const oldRes = mockRes();
+        await authController.resetPassword(mockReq({ body: { token: firstToken, newPassword: "whatever-123" } }), oldRes);
+        expect(oldRes.statusCode).toBe(400);
+
+        const newRes = mockRes();
+        await authController.resetPassword(mockReq({ body: { token: secondToken, newPassword: "whatever-123" } }), newRes);
+        expect(newRes.statusCode).toBe(200);
+      });
+    });
+
+    describe("resetPassword", () => {
+      it("changes the password, logs the user in, and the old password stops working", async () => {
+        await authController.register(mockReq({ body: { email: "reset-flow@example.com", password: "old-password-123" } }), mockRes());
+        received = [];
+        await authController.requestPasswordReset(mockReq({ body: { email: "reset-flow@example.com" } }), mockRes());
+        const token = extractToken(received[0].text ?? "");
+
+        const res = mockRes();
+        await authController.resetPassword(mockReq({ body: { token, newPassword: "new-password-456" } }), res);
+        expect(res.statusCode).toBe(200);
+        expect(res.cookies).toHaveLength(1); // auto-login after a successful reset
+
+        const loginWithOld = mockRes();
+        await authController.login(mockReq({ body: { email: "reset-flow@example.com", password: "old-password-123" } }), loginWithOld);
+        expect(loginWithOld.statusCode).toBe(401);
+
+        const loginWithNew = mockRes();
+        await authController.login(mockReq({ body: { email: "reset-flow@example.com", password: "new-password-456" } }), loginWithNew);
+        expect(loginWithNew.statusCode).toBe(200);
+      });
+
+      it("rejects a nonexistent token with 400", async () => {
+        const res = mockRes();
+        await authController.resetPassword(mockReq({ body: { token: "not-a-real-token", newPassword: "whatever-123" } }), res);
+        expect(res.statusCode).toBe(400);
+      });
+
+      it("rejects an expired token", async () => {
+        const user = await prisma.user.create({ data: { email: "expired-token@example.com", passwordHash: "x" } });
+        const token = generateLinkToken();
+        await prisma.passwordResetToken.create({
+          data: { userId: user.id, tokenHash: hashLinkToken(token), expiresAt: new Date(Date.now() - 1000) },
+        });
+        const res = mockRes();
+        await authController.resetPassword(mockReq({ body: { token, newPassword: "whatever-123" } }), res);
+        expect(res.statusCode).toBe(400);
+      });
+
+      it("rejects a token that's already been used", async () => {
+        const user = await prisma.user.create({ data: { email: "used-token@example.com", passwordHash: "x" } });
+        const token = generateLinkToken();
+        await prisma.passwordResetToken.create({
+          data: { userId: user.id, tokenHash: hashLinkToken(token), expiresAt: new Date(Date.now() + 3_600_000), usedAt: new Date() },
+        });
+        const res = mockRes();
+        await authController.resetPassword(mockReq({ body: { token, newPassword: "whatever-123" } }), res);
+        expect(res.statusCode).toBe(400);
+      });
+    });
+
+    describe("requestVerification / verifyEmail", () => {
+      it("requestVerification sends an email for an unverified user", async () => {
+        const user = await prisma.user.create({ data: { email: "resend-verify@example.com", passwordHash: "x" } });
+        const res = mockRes();
+        await authController.requestVerification(mockReq({ userId: user.id }), res);
+        expect(res.statusCode).toBe(200);
+        expect(received).toHaveLength(1);
+      });
+
+      it("requestVerification is a no-op (no email sent) once already verified", async () => {
+        const user = await prisma.user.create({ data: { email: "already-verified@example.com", passwordHash: "x", emailVerified: true } });
+        const res = mockRes();
+        await authController.requestVerification(mockReq({ userId: user.id }), res);
+        expect(res.statusCode).toBe(200);
+        expect(received).toHaveLength(0);
+      });
+
+      it("verifyEmail marks the user verified given a valid token", async () => {
+        const user = await prisma.user.create({ data: { email: "confirm-me@example.com", passwordHash: "x" } });
+        await authController.requestVerification(mockReq({ userId: user.id }), mockRes());
+        const token = extractToken(received[0].text ?? "");
+
+        const res = mockRes();
+        await authController.verifyEmail(mockReq({ body: { token } }), res);
+        expect(res.statusCode).toBe(200);
+
+        const updated = await prisma.user.findUnique({ where: { id: user.id } });
+        expect(updated?.emailVerified).toBe(true);
+        expect(updated?.emailVerifiedAt).not.toBeNull();
+      });
+
+      it("rejects an invalid token with 400", async () => {
+        const res = mockRes();
+        await authController.verifyEmail(mockReq({ body: { token: "not-a-real-token" } }), res);
+        expect(res.statusCode).toBe(400);
+      });
+
+      it("the same token can't be used twice", async () => {
+        const user = await prisma.user.create({ data: { email: "double-verify@example.com", passwordHash: "x" } });
+        await authController.requestVerification(mockReq({ userId: user.id }), mockRes());
+        const token = extractToken(received[0].text ?? "");
+        await authController.verifyEmail(mockReq({ body: { token } }), mockRes());
+
+        const res = mockRes();
+        await authController.verifyEmail(mockReq({ body: { token } }), res);
+        expect(res.statusCode).toBe(400);
+      });
+    });
+  });
+
   describe("logout — cookie clearing", () => {
     // Regression: clearCookie must be called with the SAME path/secure/sameSite/httpOnly
     // options the cookie was originally set with — a browser only deletes a cookie when those

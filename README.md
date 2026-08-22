@@ -124,3 +124,29 @@ zraniteľnosť — a opäť len v testoch, nie v bežiacej appke.
   0%-nú položku, a ak áno, pod akou tax category (`E`/`O`, nie `Z`)
 - Reverse charge (`AE`) a zahraničný odberateľ v EÚ — mimo rozsahu WP0, generátor aj schéma sú
   zámerne obmedzené na tuzemské SK-SK faktúry (viď bod vyššie)
+- Overiť RPO lookup (IČO autofill) proti reálnej prevádzke — V1 API sa počas vývoja správalo
+  nespoľahlivo, appka to už rozlišuje ako `unavailable` (nie tiché "nenašlo sa"), ale samotná
+  spoľahlivosť zdroja zostáva neoverená
+- SPF/DKIM pre doménu, z ktorej appka posiela faktúry/upomienky zákazníkom — inak riziko spamu
+- Právne stránky (Obchodné podmienky, GDPR/Ochrana osobných údajov) — landing page na ne zatiaľ
+  neodkazuje
+
+## Produkčné náležitosti — heslo, rate limiting, monitoring
+
+Doplnené mimo pôvodných WP0–WP7 (2026-08-22), na žiadosť projektového vlastníka:
+
+- **Zabudnuté heslo + overenie emailu.** `POST /auth/request-password-reset` /
+  `POST /auth/reset-password` / `POST /auth/request-verification` / `POST /auth/verify-email`.
+  Overenie emailu je **len informatívny badge** v appke (banner s "Poslať overovací email
+  znova"), nič v appke naň nie je naviazané ako gate — malá firma sa nemá prečo zaseknúť na
+  flaky emaile pri fakturačnom nástroji. Oba flow potrebujú vlastné systémové SMTP (odlišné od
+  per-tenant SMTP vo firemných Nastaveniach) — vyplň `APP_SMTP_*` v `.env`
+  (`backend/.env.example`). Bez toho appka funguje ďalej normálne, tieto dva requesty len
+  potichu zlyhajú (zalogujú chybu na serveri, klientovi odpovedia generickou správou).
+- **Rate limiting.** `express-rate-limit` na `/auth/login`, `/auth/register`,
+  `/auth/request-password-reset`, `/auth/reset-password`, `/auth/request-verification`,
+  `/auth/verify-email` — 10 requestov / 15 min / IP (`backend/src/middleware/rateLimit.ts`).
+- **Sentry.** `@sentry/node` (backend, `backend/src/instrument.ts`) a `@sentry/react`
+  (frontend, `frontend/src/instrument.ts`) — obe úplne neaktívne, kým nevyplníš `SENTRY_DSN`
+  (backend `.env`) / `VITE_SENTRY_DSN` (frontend `.env`). Nevyžaduje žiadny Sentry účet na to,
+  aby appka bežala — je to čisto voliteľné.

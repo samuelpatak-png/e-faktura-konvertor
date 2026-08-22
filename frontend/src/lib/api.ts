@@ -64,6 +64,11 @@ export const authApi = {
   register: (email: string, password: string) => api.post<User>("/auth/register", { email, password }).then((r) => r.data),
   login: (email: string, password: string) => api.post<User>("/auth/login", { email, password }).then((r) => r.data),
   logout: () => api.post("/auth/logout"),
+  requestPasswordReset: (email: string) => api.post<{ message: string }>("/auth/request-password-reset", { email }).then((r) => r.data),
+  resetPassword: (token: string, newPassword: string) =>
+    api.post<User>("/auth/reset-password", { token, newPassword }).then((r) => r.data),
+  requestVerification: () => api.post<{ message: string }>("/auth/request-verification").then((r) => r.data),
+  verifyEmail: (token: string) => api.post<{ success: boolean }>("/auth/verify-email", { token }).then((r) => r.data),
 };
 
 export const companyApi = {
