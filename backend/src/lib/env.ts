@@ -28,6 +28,25 @@ const envSchema = z.object({
   CORS_ORIGIN: z.string().default("http://localhost:5173"),
   SAPI_SK_MODE: z.enum(["mock", "live"]).default("mock"),
   SAPI_SK_BASE_URL: z.string().default("https://api.efaktura.sk/sapi"),
+
+  // System-level SMTP for transactional auth emails (password reset, email verification) — a
+  // separate concept from the per-tenant EmailSettings used to send invoices/reminders to a
+  // company's own customers. All optional: the app must still boot without them (self-hosted
+  // deploys that don't need those two flows), and the affected endpoints just log server-side
+  // and answer generically rather than erroring out — see authController.ts.
+  APP_SMTP_HOST: z.string().optional(),
+  APP_SMTP_PORT: z.coerce.number().optional(),
+  APP_SMTP_SECURE: z
+    .string()
+    .default("true")
+    .transform((v) => v === "true"),
+  APP_SMTP_USER: z.string().optional(),
+  APP_SMTP_PASSWORD: z.string().optional(),
+  APP_SMTP_FROM_EMAIL: z.string().optional(),
+  APP_SMTP_FROM_NAME: z.string().default("e-Faktúra Konvertor"),
+
+  // Optional — Sentry stays fully inactive (no-op init) when unset. See instrument.ts.
+  SENTRY_DSN: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);

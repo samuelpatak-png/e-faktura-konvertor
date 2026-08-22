@@ -1,5 +1,7 @@
+import { useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "../../lib/auth";
+import { authApi } from "../../lib/api";
 
 const NAV_LINK_CLASS = ({ isActive }: { isActive: boolean }) =>
   `rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
@@ -9,11 +11,29 @@ const NAV_LINK_CLASS = ({ isActive }: { isActive: boolean }) =>
 export function AppShell() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const [resendState, setResendState] = useState<"idle" | "sending" | "sent" | "error">("idle");
+  const [bannerDismissed, setBannerDismissed] = useState(false);
 
   async function handleLogout() {
     await logout();
     navigate("/", { replace: true });
   }
+
+  async function handleResendVerification() {
+    setResendState("sending");
+    try {
+      await authApi.requestVerification();
+      setResendState("sent");
+    } catch {
+      setResendState("error");
+    }
+  }
+
+  // Non-blocking nudge, not a gate — see schema.prisma User.emailVerified for why nothing in
+  // the app checks this besides this banner. Dismissal is per page-load only (not persisted):
+  // simplest option, and the banner is unobtrusive enough that re-showing it after a refresh
+  // isn't worth the extra state to avoid.
+  const showVerifyBanner = Boolean(user) && user?.emailVerified === false && !bannerDismissed;
 
   return (
     <div className="min-h-dvh bg-canvas">
@@ -78,6 +98,35 @@ export function AppShell() {
           </NavLink>
         </nav>
       </header>
+      {showVerifyBanner && (
+        <div className="border-b border-line bg-warning-50 px-4 py-2 text-sm text-warning-500 sm:px-6">
+          <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-2">
+            <span>Over si emailovú adresu, aby si neprišiel o dôležité upozornenia.</span>
+            <div className="flex items-center gap-4">
+              {resendState === "sent" ? (
+                <span className="font-medium">Email odoslaný, skontroluj schránku.</span>
+              ) : resendState === "error" ? (
+                <span className="font-medium">Odoslanie zlyhalo, skús neskôr.</span>
+              ) : (
+                <button
+                  onClick={handleResendVerification}
+                  disabled={resendState === "sending"}
+                  className="cursor-pointer font-medium underline underline-offset-2 disabled:cursor-default disabled:opacity-60"
+                >
+                  {resendState === "sending" ? "Odosielam…" : "Poslať overovací email znova"}
+                </button>
+              )}
+              <button
+                onClick={() => setBannerDismissed(true)}
+                aria-label="Zavrieť"
+                className="cursor-pointer text-warning-500/70 hover:text-warning-500"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6">
         <Outlet />
       </main>

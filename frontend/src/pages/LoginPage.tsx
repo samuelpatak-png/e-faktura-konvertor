@@ -57,6 +57,9 @@ export function LoginPage() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
             />
+            <Link to="/forgot-password" className="-mt-2 self-end text-sm font-medium text-brand-600 hover:text-brand-700">
+              Zabudnuté heslo?
+            </Link>
             <Button type="submit" loading={loading} className="mt-2 w-full">
               Prihlásiť sa
             </Button>

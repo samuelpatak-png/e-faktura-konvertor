@@ -16,6 +16,12 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
+  // Soft signal only — nothing in the app is gated on this (see authController handoff notes).
+  // A non-technical small-business owner shouldn't be locked out of an invoicing tool by a
+  // flaky verification email; this just drives a dismissible "over si email" banner.
+  emailVerified   Boolean   @default(false)
+  emailVerifiedAt DateTime?
+
   companyProfile   CompanyProfile?
   sapiSkCredential SapiSkCredential?
   invoices         Invoice[]
@@ -25,6 +31,37 @@ model User {
   emailSettings    EmailSettings?
   reminderSettings ReminderSettings?
   sentEmails       SentEmail[]
+
+  passwordResetTokens     PasswordResetToken[]
+  emailVerificationTokens EmailVerificationToken[]
+}
+
+// Only the SHA-256 hash of the token is stored (same principle as never storing a plaintext
+// password) — a database read alone can never produce a usable reset link. Old/expired rows
+// aren't pruned automatically; that's a housekeeping job for later, not a correctness issue
+// (an expired or already-used token is simply rejected at lookup time).
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+model EmailVerificationToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
 }
 
 model CompanyProfile {

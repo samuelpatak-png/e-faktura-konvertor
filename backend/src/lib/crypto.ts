@@ -30,3 +30,21 @@ export function decryptSecret(stored: string): string {
   ]);
   return plaintext.toString("utf8");
 }
+
+/**
+ * Generates a one-time link token (password reset, email verification) — 256 bits of entropy,
+ * hex-encoded so it's a plain URL-safe string with no padding/escaping concerns.
+ */
+export function generateLinkToken(): string {
+  return crypto.randomBytes(32).toString("hex");
+}
+
+/**
+ * Hashes a link token for storage. Unlike a password, a link token is already high-entropy
+ * random data (not something a human chose), so a fast SHA-256 comparison is the correct tool
+ * here, not bcrypt's deliberately-slow KDF — the threat this defends against is "someone reads
+ * the token column out of a DB dump", not "someone guesses a low-entropy secret".
+ */
+export function hashLinkToken(token: string): string {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
